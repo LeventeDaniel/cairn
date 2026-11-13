@@ -3,7 +3,7 @@ import type { EngineInterface, Register, SessionMessage, SessionUsage } from 'cl
 
 import type { Compaction, Offer, Snap, Work } from '../types'
 
-const VERSION = '0.3.1'
+const VERSION = '0.4.0'
 const PANE = 'coach-watcher'
 const TITLE = 'Context Coach'
 // Tunable in ~/.claude/coach/config.json, next to Context Coach's own keys.
@@ -18,6 +18,11 @@ const DEFAULTS = {
   idle_minutes: 3,     // an offer nobody answered runs after this long with no new prompt
   trim_over: 4000,     // tool results longer than this (chars) are trimmed before summarizing
   trim_keep: 800,      // chars kept from a trimmed result (head + tail)
+  // The prompt cache keeps a context cheap to re-read for this long after the last
+  // reply (60 min on plans with the 1-hour cache, 5 in usage overage). Past it, the
+  // next reply re-reads the whole context at full price.
+  cache_ttl_minutes: 60,
+  cache_min_tokens: 60000, // below this a cold re-read is cheap: leave the context alone
 }
 type Cfg = typeof DEFAULTS
 
@@ -54,6 +59,7 @@ let compacting = false
 let turnDone = ''      // what finished, '' if nothing
 let turnSeq = 0        // main-loop turns started; an idle timer checks nothing new began
 let snoozedTo = 0      // "Not now": no new offer below this %
+let compactions = 0    // main-loop compactions done; a cache timer checks none ran since
 
 async function loadCfg($: EngineInterface, home: string) {
   try {
@@ -80,7 +86,7 @@ async function record($: EngineInterface, tool: string, input: Record<string, un
   if (ran.deny !== undefined) return
   const file = (input.file_path ?? input.notebook_path) as string | undefined
   const cmd = typeof input.command === 'string' ? oneLine(input.command, 160) : undefined
-  const now = $.clock.now()
+  const now = await $.clock.now()
   if (!ran.isError) {
     // A wrap-up that still asks the person something leaves work pending.
     if (/(^|__)wrap_up$/.test(tool)) { if (!input.ask) turnDone ||= 'task wrapped up' }
@@ -208,7 +214,7 @@ async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'ra
     usd: u.cost?.usd,
     level,
     inbox: await inbox($, home),
-    at: $.clock.now(),
+    at: await $.clock.now(),
   }
   await update($, snap, () => s)
 
@@ -295,7 +301,8 @@ async function decide($: EngineInterface) {
     queueCompact($)
     return
   }
-  await update($, offer, () => ({ percent: p, reason: v.reason, at: $.clock.now() }))
+  const at = await $.clock.now()
+  await update($, offer, () => ({ percent: p, reason: v.reason, at }))
   if (cfg.compact_mode === 'smart') {
     // Nobody answers and no turn starts: compact while the person is away.
     const seq = turnSeq
@@ -308,6 +315,69 @@ async function idleCompact($: EngineInterface, seq: number) {
   await update($, offer, () => null)
   $.ui.toast("Coach compacted while you were away: see the Context Coach pane")
   queueCompact($)
+}
+
+// ------------------------------------------------------------ prompt cache (8)
+const k = (n?: number) => (n === undefined ? '?' : `${Math.round(n / 1000)}k`)
+const cacheOn = () => (cfg.compact_mode === 'smart' || cfg.compact_mode === 'auto') && cfg.cache_ttl_minutes >= 15
+
+/**
+ * At each main-loop turn end: if nobody comes back before the prompt cache
+ * expires, compact a few minutes before it does. Compacting re-reads the context
+ * from a warm cache (cheap); a reply after expiry re-reads all of it at full price.
+ */
+function armCacheGuard($: EngineInterface) {
+  if (!cacheOn()) return
+  const seq = turnSeq, done = compactions
+  $.clock.after((cfg.cache_ttl_minutes - 5) * 60000, () => { void cacheGuard($, seq, done) })
+}
+
+async function cacheGuard($: EngineInterface, seq: number, done: number) {
+  if (seq !== turnSeq || done !== compactions || pending || compacting || !cacheOn()) return
+  const { tokens = 0, percent = 0 } = await read($, snap)
+  if (percent < snoozedTo) return // "Not now" stands
+  if (tokens < cfg.cache_min_tokens) return
+  await update($, offer, () => null)
+  $.ui.toast(`Coach compacted before the prompt cache expired: ${k(tokens)} tokens would have been re-read at full price`)
+  queueCompact($)
+}
+
+type Ends = Record<string, { at: number; tokens: number }>
+
+/** When this session last answered, and how big it was, kept across restarts. */
+async function noteEnd($: EngineInterface) {
+  try {
+    const sid = await $.session.id()
+    const tokens = (await read($, snap)).tokens ?? 0
+    const at = await $.clock.now()
+    const ends = ((await $.store.get('lastEnd')) ?? {}) as Ends
+    delete ends[sid]
+    ends[sid] = { at, tokens }
+    const keep = Object.entries(ends).slice(-30)
+    await $.store.set('lastEnd', Object.fromEntries(keep))
+  } catch (err) {
+    $.ui.log(`coach-watcher: could not note the turn end: ${String(err)}`)
+  }
+}
+
+/**
+ * At session start: a session coming back after its prompt cache expired, with
+ * a big context, gets an offer to compact before the first reply re-reads it all.
+ */
+async function coldCheck($: EngineInterface) {
+  if (cfg.compact_mode === 'off') return
+  const ends = ((await $.store.get('lastEnd')) ?? {}) as Ends
+  const last = ends[await $.session.id()]
+  if (!last || last.tokens < cfg.cache_min_tokens) return
+  const now = await $.clock.now()
+  const idle = (now - last.at) / 60000
+  if (idle < cfg.cache_ttl_minutes) return
+  const away = idle >= 120 ? `${Math.round(idle / 60)} h` : `${Math.round(idle)} min`
+  const percent = (await read($, snap)).percent ?? 0
+  await update($, offer, () => ({
+    percent, at: now, cold: true,
+    reason: `away ${away}, the prompt cache expired: the next reply re-reads ${k(last.tokens)} tokens at full price, compacting first makes it and later replies cheaper`,
+  }))
 }
 
 async function snooze($: EngineInterface) {
@@ -346,6 +416,7 @@ async function runCompact($: EngineInterface) {
     await $.command.run({ command: 'compact', args: '' })
     pending = false
     tries = 0
+    compactions++
     $.ui.toast("Compacted with Coach's notes: see the Context Coach pane")
   } catch (err) {
     tries++
@@ -373,6 +444,11 @@ export const register: Register = on => {
     } catch (err) {
       $.ui.log(`coach-watcher: first measure failed: ${String(err)}`)
     }
+    try {
+      await coldCheck($)
+    } catch (err) {
+      $.ui.log(`coach-watcher: cold-start check failed: ${String(err)}`)
+    }
     return ran
   })
 
@@ -399,6 +475,8 @@ export const register: Register = on => {
         $.ui.log(`coach-watcher: compaction decision failed: ${String(err)}`)
       }
     }
+    armCacheGuard($)
+    await noteEnd($)
     return ran
   })
 
@@ -444,13 +522,14 @@ export const register: Register = on => {
       check = c.check
       messages = c.messages
     }
+    const at = await $.clock.now()
     await update($, comps, list => [...list, {
-      at: $.clock.now(), trigger: e.trigger, isSubagent,
+      at, trigger: e.trigger, isSubagent,
       tokensBefore: res.tokensBefore, tokensAfter: res.tokensAfter,
       trimmedCount: fellBack ? 0 : trimmed.count, trimmedChars: fellBack ? 0 : trimmed.chars,
       check, fellBack,
     }].slice(-10))
-    if (!isSubagent) { snoozedTo = 0; await update($, offer, () => null) }
+    if (!isSubagent) { snoozedTo = 0; compactions++; await update($, offer, () => null) }
     return messages === res.messages ? res : { ...res, messages }
   }).catch(($, e, next) => next(e)) // on any failure, the engine's own compaction stands
 
@@ -470,10 +549,11 @@ export const register: Register = on => {
     const o = await read($, offer)
     if (!o || e.props.hasSurvey || e.props.isWorking || pending || compacting) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
-    const idle = cfg.compact_mode === 'smart' ? ` · runs by itself in ${cfg.idle_minutes} min if you're away` : ''
+    const idle = cfg.compact_mode === 'smart' && !o.cold ? ` · runs by itself in ${cfg.idle_minutes} min if you're away` : ''
+    const say = o.cold ? `Coach: compact before you continue (${o.reason})` : `Coach: good moment to compact (${o.reason})`
     return (
       <Box>
-        <Text>Coach: good moment to compact ({o.reason}){idle} </Text>
+        <Text>{say}{idle} </Text>
         <Button key="now" label="Compact now" onPress={() => acceptOffer($)} />
         <Text> </Text>
         <Button key="later" label="Not now" onPress={() => snooze($)} />
@@ -502,8 +582,6 @@ export const register: Register = on => {
       : s.level === 1 ? 'Hand off at the next stopping point.'
       : usageHigh ? 'Plan usage is high: prefer haiku/sonnet subagents.'
       : 'All good.'
-    const k = (n?: number) => (n === undefined ? '?' : `${Math.round(n / 1000)}k`)
-
     return (
       <Box flexDirection="column">
         <Text bold>Context</Text>

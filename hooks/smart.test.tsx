@@ -9,12 +9,16 @@ const BAND = {
   },
 } as const
 
-type Seen = { compacts: number; toasts: string[]; release: () => void }
+type Seen = { compacts: number; toasts: string[]; release: () => void; releaseCache: () => void; stored: Record<string, unknown> }
 
 /** An engine at `percent` context; long timers (the idle one) wait for `seen.release()`. */
-function engine(on: any, percent: number): Seen {
-  const seen: Seen = { compacts: 0, toasts: [], release: () => {} }
+function engine(on: any, percent: number, opt: { now?: number; ends?: unknown } = {}): Seen {
+  const seen: Seen = { compacts: 0, toasts: [], release: () => {}, releaseCache: () => {}, stored: {} }
   const gate = new Promise<void>(r => { seen.release = r })
+  const cacheGate = new Promise<void>(r => { seen.releaseCache = r })
+  if (opt.ends) seen.stored.lastEnd = opt.ends
+  on('store.get', (_: any, e: any) => ({ value: seen.stored[e.key] }))
+  on('store.set', (_: any, e: any) => { seen.stored[e.key] = e.value; return { value: undefined } })
   on('command.register', () => ({ value: { command: 'coach' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
@@ -27,8 +31,12 @@ function engine(on: any, percent: number): Seen {
   on('ui.toast', (_: any, e: any) => { seen.toasts.push(e.text); return { value: undefined } })
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
-  on('clock.now', () => ({ value: 1000 }))
-  on('clock.after', async (_: any, e: any) => { if (e.ms > 10000) await gate; return { value: undefined } })
+  on('clock.now', () => ({ value: opt.now ?? 1000 }))
+  on('clock.after', async (_: any, e: any) => {
+    if (e.ms >= 30 * 60000) await cacheGate   // the prompt-cache guard
+    else if (e.ms > 10000) await gate         // the idle offer
+    return { value: undefined }
+  })
   on('tool.call', (_: any, e: any) =>
     e.tool === 'Bash' && e.command === 'npm test' && !(globalThis as any).__pass
       ? { isError: true, result: 'FAIL', text: 'FAIL a.test.ts' }
@@ -150,4 +158,73 @@ test('a failure left from an earlier turn does not block the offer once the task
   expect((await ui.find({ type: 'Text', text: /good moment to compact/ }))?.text).toContain('task wrapped up')
   await ui.unmount()
   expect(seen.compacts).toBe(0)
+})
+
+test('an idle context big enough to matter is compacted before the prompt cache expires', async ($, on) => {
+  const seen = engine(on, 10)   // 100k tokens: below every % threshold
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'Read', file_path: 'C:/a.ts' } as any))
+  await settle()
+  seen.release()
+  await settle()
+  expect(seen.compacts).toBe(0)
+  seen.releaseCache()           // 55 minutes with no new turn
+  await settle()
+  expect(seen.compacts).toBe(1)
+  expect(seen.toasts.some(t => t.includes('before the prompt cache expired'))).toBe(true)
+})
+
+test('a small context is left alone when the cache expires', async ($, on) => {
+  const seen = engine(on, 3)    // 30k tokens: a cold re-read is cheap
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'Read', file_path: 'C:/a.ts' } as any))
+  await settle()
+  seen.releaseCache()
+  await settle()
+  expect(seen.compacts).toBe(0)
+})
+
+test('Not now also holds off the cache guard', async ($, on) => {
+  const seen = engine(on, 62)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'Read', file_path: 'C:/a.ts' } as any))
+  await settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  await ui.press({ key: 'later' })
+  await ui.unmount()
+  seen.release(); seen.releaseCache()
+  await settle()
+  expect(seen.compacts).toBe(0)
+})
+
+test('each turn end is noted, so a later start can tell the cache went cold', async ($, on) => {
+  const seen = engine(on, 20)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'Read', file_path: 'C:/a.ts' } as any))
+  await settle()
+  expect((seen.stored.lastEnd as any).s1).toEqual({ at: 1000, tokens: 200000 })
+})
+
+test('a big session resumed after the cache expired is offered a compaction first', async ($, on) => {
+  const seen = engine(on, 20, { now: 3 * 3600000, ends: { s1: { at: 0, tokens: 200000 } } })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  const t = (await ui.find({ type: 'Text', text: /compact before you continue/ }))?.text
+  expect(t).toContain('away 3 h')
+  expect(t).toContain('200k tokens')
+  expect(t?.includes('runs by itself')).toBe(false)
+  await ui.press({ key: 'now' })
+  await settle()
+  expect(seen.compacts).toBe(1)
+  await ui.unmount()
+})
+
+test('a session resumed while the cache is still warm gets no offer', async ($, on) => {
+  engine(on, 20, { now: 30 * 60000, ends: { s1: { at: 0, tokens: 200000 } } })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect(await ui.find({ type: 'Text', text: /compact/ })).toBeUndefined()
+  await ui.unmount()
 })

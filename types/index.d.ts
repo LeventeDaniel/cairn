@@ -48,6 +48,8 @@ export type Offer = {
   reason: string
   /** clock time of the offer */
   at: number
+  /** offered at session start because the prompt cache expired while away */
+  cold?: boolean
 }
 
 declare module 'claude-code' {

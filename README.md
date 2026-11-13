@@ -17,6 +17,9 @@ Companion mod for Context Coach. It shows a live **Context Coach** pane (context
   - at `compact_hard` → it compacts at the turn end, so the engine's own auto-compact never cuts in mid-task
   - an offer nobody answers runs by itself after `idle_minutes` with no new prompt, while you are away
   The band has **Compact now** and **Not now** (quiet until context grows 10 more points).
+- **Watches the prompt cache** (`smart` and `auto`). A reply re-reads the whole context; inside the cache window that read is cheap, after it the full context is read again at full price.
+  - left idle with at least `cache_min_tokens` in context, it compacts 5 minutes before the cache expires, while compacting is still cheap (Not now still holds)
+  - a session resumed after the cache expired, with a big context, gets an offer to compact before the first reply
 - **Feeds coach.py** exact numbers in `~/.claude/coach/state/<session>.json`, because the Code tab runs no status line.
 
 ## Commands
@@ -35,6 +38,8 @@ These go in `~/.claude/coach/config.json`, next to Context Coach's own keys:
 | `compact_at` | `60` | % from which any calm turn end is |
 | `compact_hard` | `72` | % at which it compacts at the next turn end, mid-task or not |
 | `idle_minutes` | `3` | an unanswered offer runs after this many minutes with no new prompt |
+| `cache_ttl_minutes` | `60` | how long the prompt cache lasts after a reply (60 on plans with the 1-hour cache; set 5 if you're in usage overage). Below 15 the idle cache guard is off |
+| `cache_min_tokens` | `60000` | contexts smaller than this are cheap to re-read cold, so the cache checks leave them alone |
 | `trim_over` | `4000` | tool results longer than this many characters get trimmed (errors: 4×) |
 | `trim_keep` | `800` | characters kept from a trimmed result |
 | `warn` / `urgent` / `usage_warn` | `50` / `70` / `80` | shared with Context Coach |
