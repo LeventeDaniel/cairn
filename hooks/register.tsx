@@ -3,6 +3,7 @@ import type { EngineInterface, Register, SessionMessage, SessionUsage } from 'cl
 
 import type { Compaction, Offer, Snap, Work } from '../types'
 
+const VERSION = '0.3.0'
 const PANE = 'coach-watcher'
 const TITLE = 'Context Coach'
 // Tunable in ~/.claude/coach/config.json, next to Context Coach's own keys.
@@ -81,7 +82,8 @@ async function record($: EngineInterface, tool: string, input: Record<string, un
   const cmd = typeof input.command === 'string' ? oneLine(input.command, 160) : undefined
   const now = $.clock.now()
   if (!ran.isError) {
-    if (/(^|__)wrap_up$/.test(tool)) turnDone ||= 'task wrapped up'
+    // A wrap-up that still asks the person something leaves work pending.
+    if (/(^|__)wrap_up$/.test(tool)) { if (!input.ask) turnDone ||= 'task wrapped up' }
     else if (cmd && /\bgit\s+(commit|push)\b/.test(cmd)) turnDone = /push/.test(cmd) ? 'work pushed' : 'work committed'
     else if (cmd && (await read($, work)).fails.some(f => f.cmd === cmd)) turnDone ||= 'failing command passes now'
   }
@@ -275,6 +277,13 @@ async function decide($: EngineInterface) {
   if (p === undefined) return
   const w = await read($, work)
   const v = verdict(p, cfg.compact_mode, cfg, done, w.fails.length, snoozedTo)
+  try {
+    // The last decision, for anyone checking why Coach did or didn't compact.
+    await $.fs.write(`${claudeDir($.plugin.root)}/coach/state/compact-decision.json`, JSON.stringify({
+      t: Date.now() / 1000, version: VERSION, pct: p, mode: cfg.compact_mode, done, openFails: w.fails.length,
+      snoozedTo, act: v.act, reason: v.reason,
+    }))
+  } catch { /* the log is optional */ }
   if (v.act === 'wait') return
   if (v.act === 'now') {
     await update($, offer, () => null)

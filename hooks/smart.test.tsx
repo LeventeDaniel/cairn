@@ -128,3 +128,13 @@ test('Not now hides the offer until context grows 10 more points', async ($, on)
   await settle()
   expect(seen.compacts).toBe(0)
 })
+
+test('a wrap-up that still asks something is not a finished task', async ($, on) => {
+  engine(on, 50)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x', ask: 'Push it?' } as any))
+  await settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect(await ui.find({ type: 'Text', text: /good moment/ })).toBeUndefined()
+  await ui.unmount()
+})
