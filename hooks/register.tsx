@@ -1,0 +1,429 @@
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, Register, SessionMessage, SessionUsage } from 'claude-code'
+
+import type { Compaction, Snap, Work } from '../types'
+
+const PANE = 'coach-watcher'
+const TITLE = 'Context Coach'
+// Tunable in ~/.claude/coach/config.json, next to Context Coach's own keys.
+const DEFAULTS = {
+  warn: 50, urgent: 70, usage_warn: 80,
+  compact_mode: 'ask' as 'ask' | 'auto' | 'off', // clean-break compaction
+  compact_at: 60,      // % context at which a clean-break compaction is offered/run
+  trim_over: 4000,     // tool results longer than this (chars) are trimmed before summarizing
+  trim_keep: 800,      // chars kept from a trimmed result (head + tail)
+}
+type Cfg = typeof DEFAULTS
+
+const snap = atom({ plugin: 'coach-watcher', key: 'snap' } as const, {
+  window: 0, limits: [], level: 0, inbox: [], at: 0,
+} as Snap, { shape: 'snap-1' })
+const work = atom({ plugin: 'coach-watcher', key: 'work' } as const,
+  { files: [], fails: [], oks: [] } as Work, { shape: 'work-1' })
+const comps = atom({ plugin: 'coach-watcher', key: 'comps' } as const,
+  [] as Compaction[], { shape: 'comps-1' })
+
+/** ~/.claude, taken from where the mod lives (…/.claude/dev-mods/… or …/.claude/plugins/…). */
+function claudeDir(root: string): string {
+  const p = root.replace(/\\/g, '/')
+  const i = p.toLowerCase().lastIndexOf('/.claude/')
+  return i >= 0 ? p.slice(0, i + '/.claude'.length) : p
+}
+
+/** Same rule as coach.py's safe_id, so both name the same state file. */
+const safeId = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80) || 'unknown'
+
+const pct = (limits: Snap['limits'], kind: string) =>
+  limits.find(l => l.kind === kind)?.percentUsed
+
+const oneLine = (s: string, n: number) => s.replace(/\s+/g, ' ').trim().slice(0, n)
+const baseName = (p: string) => p.replace(/\\/g, '/').split('/').pop() || p
+
+let lastLevel = 0
+let cfg: Cfg = { ...DEFAULTS }
+let offeredAt = 0      // compact_at crossing already offered/handled
+let compacting = false
+
+async function loadCfg($: EngineInterface, home: string) {
+  try {
+    cfg = { ...DEFAULTS, ...JSON.parse(await $.fs.read(`${home}/coach/config.json`)) }
+  } catch {
+    cfg = { ...DEFAULTS }
+  }
+}
+
+async function inbox($: EngineInterface, home: string): Promise<string[]> {
+  try {
+    const list = await $.fs.list(`${home}/inbox`)
+    return list
+      .filter(f => f.kind === 'file' && f.name.endsWith('.md') && f.size > 0)
+      .map(f => f.name.replace(/\.md$/, ''))
+  } catch {
+    return []
+  }
+}
+
+// ------------------------------------------------------------ work tracking (1)
+async function record($: EngineInterface, tool: string, input: Record<string, unknown>,
+  ran: { deny?: string; isError?: true; text?: string }) {
+  if (ran.deny !== undefined) return
+  const file = (input.file_path ?? input.notebook_path) as string | undefined
+  const cmd = typeof input.command === 'string' ? oneLine(input.command, 160) : undefined
+  const now = $.clock.now()
+  if ((tool === 'Edit' || tool === 'Write' || tool === 'NotebookEdit' || tool === 'MultiEdit') && file && !ran.isError) {
+    await update($, work, w => ({ ...w, files: [...w.files.filter(f => f !== file), file].slice(-40) }))
+  } else if ((tool === 'Bash' || tool === 'PowerShell') && cmd) {
+    if (ran.isError) {
+      const error = oneLine((ran.text ?? '').split('\n').filter(l => l.trim()).slice(-3).join(' | '), 300)
+      await update($, work, w => ({ ...w, fails: [...w.fails.filter(f => f.cmd !== cmd), { cmd, error, at: now }].slice(-8) }))
+    } else {
+      await update($, work, w => ({
+        ...w,
+        fails: w.fails.filter(f => f.cmd !== cmd),
+        oks: [...w.oks.filter(c => c !== cmd), cmd].slice(-6),
+      }))
+    }
+  }
+}
+
+// ------------------------------------------------------------ instructions (2, 6)
+async function sessionNotes($: EngineInterface): Promise<{ goal?: string; next?: string }> {
+  try {
+    const t = await $.fs.read('SESSION.md')
+    const sec = (name: string) => t.match(new RegExp(`##\\s*${name}[^\\n]*\\n+([\\s\\S]*?)(?=\\n##|$)`, 'i'))?.[1]?.trim()
+    return { goal: sec('Goal')?.slice(0, 300), next: sec('Next')?.slice(0, 600) }
+  } catch {
+    return {}
+  }
+}
+
+function latestAsks(messages: readonly SessionMessage[]): string[] {
+  return messages
+    .filter(m => m.role === 'user' && m.text.trim() && !(m.toolResults?.length) &&
+      !m.text.startsWith('<') && !m.text.startsWith('[Context Coach'))
+    .slice(-4)
+    .map(m => oneLine(m.text, 300))
+}
+
+function stateBlock(w: Work, notes: { goal?: string; next?: string }, asks: string[]): string {
+  const out: string[] = []
+  out.push(`Goal: ${notes.goal ?? "not written down; infer it from the user's latest requests below"}`)
+  if (notes.next) out.push(`Next steps (SESSION.md):\n${notes.next}`)
+  if (w.files.length) out.push(`Files edited this session (most recent last): ${w.files.slice(-25).join(', ')}`)
+  if (w.fails.length) out.push('Commands that failed and have not succeeded since:\n' +
+    w.fails.map(f => `- \`${f.cmd}\` → ${f.error || 'error'}`).join('\n'))
+  if (w.oks.length) out.push(`Recent commands that worked: ${w.oks.map(c => `\`${c}\``).join(', ')}`)
+  if (asks.length) out.push("The user's latest requests (most recent last):\n" + asks.map((a, i) => `${i + 1}. ${a}`).join('\n'))
+  return out.join('\n')
+}
+
+async function mainInstructions($: EngineInterface, messages: readonly SessionMessage[]): Promise<string> {
+  const w = await read($, work)
+  return '[Context Coach] Keep these facts exactly in the summary, with exact paths and commands:\n' +
+    stateBlock(w, await sessionNotes($), latestAsks(messages)) +
+    '\nKeep: the goal, decisions and why, open errors, exact file paths, what is next. ' +
+    'Drop: raw file contents, long logs, search dumps, attempts that were superseded.'
+}
+
+const SUBAGENT_INSTRUCTIONS = '[Context Coach] This is a subagent transcript. Keep only: the task it was given, ' +
+  'its findings with file:line references, conclusions, and anything still unresolved. Drop exploration, ' +
+  'raw file contents and dead ends.'
+
+// ------------------------------------------------------------ trimming (3)
+function trimMessages(messages: readonly SessionMessage[], c: Cfg) {
+  const label = new Map<string, string>()
+  for (const m of messages) for (const u of m.toolUses) {
+    const i = u.input
+    const what = (i.file_path ?? i.notebook_path ?? i.command ?? i.pattern ?? i.url ?? i.query ?? '') as string
+    label.set(u.tool_use_id, `${u.tool}${what ? ' ' + oneLine(String(what), 120) : ''}`)
+  }
+  let count = 0, chars = 0
+  const out = messages.map(m => {
+    const rs = m.toolResults
+    if (m.role !== 'user' || !rs?.length) return m
+    const limit = (isError: boolean) => (isError ? c.trim_over * 4 : c.trim_over)
+    if (!rs.some(r => r.text.length > limit(r.isError))) return m
+    const toolResults = rs.map(r => {
+      if (r.text.length <= limit(r.isError)) return { tool_use_id: r.tool_use_id, text: r.text, isError: r.isError }
+      const head = Math.floor(c.trim_keep * 0.75), tail = c.trim_keep - head
+      const cut = r.text.length - head - tail
+      count++; chars += cut
+      return {
+        tool_use_id: r.tool_use_id, isError: r.isError,
+        text: r.text.slice(0, head) +
+          `\n…[Context Coach trimmed ${cut} chars of ${label.get(r.tool_use_id) ?? 'tool output'}; re-run it if needed]…\n` +
+          r.text.slice(-tail),
+      }
+    })
+    // No handle: the engine builds this copy from its role, text and tool blocks.
+    return { role: m.role, text: m.text, toolUses: [], toolResults } as SessionMessage
+  })
+  return { messages: out, count, chars }
+}
+
+// ------------------------------------------------------------ summary check (4)
+function checkSummary(messages: readonly SessionMessage[], w: Work, block: string) {
+  const recent = w.files.slice(-5)
+  if (!recent.length) return { messages, check: 'n/a' as const }
+  const all = messages.map(m => m.text).join('\n').toLowerCase()
+  const missing = recent.filter(f => !all.includes(baseName(f).toLowerCase()))
+  if (!missing.length) return { messages, check: 'ok' as const }
+  // Patch the summary itself (the first plain message) so no extra turn is added.
+  const i = messages.findIndex(m => !m.toolUses.length && !(m.toolResults?.length))
+  const note = '\n\n[Context Coach] State carried across this compaction:\n' + block
+  const patched = i >= 0
+    ? messages.map((m, j) => (j === i ? { role: m.role, text: m.text + note, toolUses: [] } as SessionMessage : m))
+    : [{ role: 'user', text: note.trim(), toolUses: [] } as SessionMessage, ...messages]
+  return { messages: patched, check: 'patched' as const }
+}
+
+// ------------------------------------------------------------ measuring
+async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'rateLimits' | 'cost'>) {
+  const home = claudeDir($.plugin.root)
+  await loadCfg($, home)
+  const p = u.context.percent
+  const level = p === undefined ? 0 : p >= cfg.urgent ? 2 : p >= cfg.warn ? 1 : 0
+  const s: Snap = {
+    percent: p,
+    tokens: u.context.tokens,
+    window: u.context.window,
+    limits: u.rateLimits.map(l => ({ kind: l.kind, percentUsed: l.percentUsed })),
+    usd: u.cost?.usd,
+    level,
+    inbox: await inbox($, home),
+    at: $.clock.now(),
+  }
+  await update($, snap, () => s)
+
+  const parts: string[] = []
+  if (p !== undefined) parts.push(`${p.toFixed(0)}% ctx${level === 2 ? ' ⚠ clear soon' : level === 1 ? ' ●' : ''}`)
+  const fh = pct(s.limits, 'five_hour'), sd = pct(s.limits, 'seven_day')
+  if (fh !== undefined) parts.push(`5h ${fh.toFixed(0)}%`)
+  if (sd !== undefined) parts.push(`7d ${sd.toFixed(0)}%`)
+  $.ui.status(parts.length ? 'Coach · ' + parts.join(' · ') : undefined)
+
+  if (level > lastLevel) {
+    $.ui.toast(level === 2
+      ? `Context ${p!.toFixed(0)}% full: save with handoff, then /clear`
+      : `Context ${p!.toFixed(0)}% full: plan a handoff at the next stopping point`)
+  }
+  lastLevel = level
+
+  const state = {
+    t: Date.now() / 1000, pct: p ?? null, window: s.window || null,
+    five_hour: fh ?? null, seven_day: sd ?? null, model: null, via: 'coach-watcher',
+  }
+  try {
+    const sid = safeId(await $.session.id())
+    const text = JSON.stringify(state)
+    await $.fs.write(`${home}/coach/state/${sid}.json`, text)
+    await $.fs.write(`${home}/coach/state/last.json`, text)
+  } catch (err) {
+    $.ui.log(`coach-watcher: could not write state: ${String(err)}`)
+  }
+  return p
+}
+
+// ------------------------------------------------------------ clean break (5)
+async function cleanBreak($: EngineInterface, p: number | undefined) {
+  if (p === undefined) return
+  if (p < cfg.compact_at) { offeredAt = 0; return }
+  if (offeredAt || compacting || cfg.compact_mode === 'off') return
+  offeredAt = p
+  if (cfg.compact_mode === 'auto') {
+    $.ui.toast(`Context ${p.toFixed(0)}%: compacting with Coach's notes once this turn ends`)
+    queueCompact($)
+  } else {
+    $.ui.toast(`Context ${p.toFixed(0)}%: type /coach compact to compact now with Coach's notes`)
+  }
+}
+
+// The engine refuses a compaction under a turn a hook is holding (a command,
+// a measure, a turn's end), so it is queued and run from a timer once that
+// hook has let go; if a turn is running then, it waits for the turn's end.
+const RETRY_MS = [400, 1500, 4000]
+let pending = false
+let tries = 0
+
+function queueCompact($: EngineInterface) {
+  pending = true
+  if (compacting) return
+  const delay = RETRY_MS[Math.min(tries, RETRY_MS.length - 1)]!
+  $.clock.after(delay, () => { void runCompact($) })
+}
+
+async function runCompact($: EngineInterface) {
+  if (!pending || compacting) return
+  compacting = true
+  try {
+    // Through the built-in /compact, not $.session.compact(): a mod's own call skips
+    // the mod's own session.compact hook, which is where Coach's notes go in.
+    // The engine queues it until the session is idle.
+    await $.command.run({ command: 'compact', args: '' })
+    pending = false
+    tries = 0
+    $.ui.toast("Compacted with Coach's notes: see the Context Coach pane")
+  } catch (err) {
+    tries++
+    if (tries > 6) {
+      pending = false
+      tries = 0
+      $.ui.toast("Coach couldn't compact; try /compact instead")
+      $.ui.log(`coach-watcher: compaction gave up: ${String(err)}`)
+    }
+    // otherwise still pending: the turn.complete hook (or the next timer) retries
+  } finally {
+    compacting = false
+  }
+  if (pending) queueCompact($)
+}
+
+// ------------------------------------------------------------ hooks
+export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    const ran = await next(e)
+    await $.command.register({ name: 'coach', description: 'Context Coach: open the pane, or `/coach compact` to compact with Coach\'s notes' })
+    void $.ui.open({ id: PANE, title: TITLE })
+    try {
+      await refresh($, await $.session.usage())
+    } catch (err) {
+      $.ui.log(`coach-watcher: first measure failed: ${String(err)}`)
+    }
+    return ran
+  })
+
+  on('session.measure', async ($, e, next) => {
+    const p = await refresh($, e)
+    await cleanBreak($, p)
+    return next(e)
+  })
+
+  // A queued compaction that met a running turn tries again when the turn ends.
+  on('turn.complete', async ($, e, next) => {
+    const ran = await next(e)
+    if (pending && e.agentId === undefined) queueCompact($)
+    return ran
+  })
+
+  on('tool.call', async ($, e, next) => {
+    const ran = await next(e)
+    try {
+      await record($, e.tool, e as unknown as Record<string, unknown>, ran)
+    } catch (err) {
+      $.ui.log(`coach-watcher: could not record ${e.tool}: ${String(err)}`)
+    }
+    return ran
+  }).catch(($, e, next) => next(e)) // never in the way: replays or runs the call as normal
+
+  on('session.compact', async ($, e, next) => {
+    const home = claudeDir($.plugin.root)
+    await loadCfg($, home)
+    const isSubagent = e.agentId !== undefined
+    const msgs = e.messages ?? []
+    const coach = isSubagent ? SUBAGENT_INSTRUCTIONS : await mainInstructions($, msgs)
+    const instructions = e.instructions ? `${e.instructions}\n\n${coach}` : coach
+    const trimmed = trimMessages(msgs, cfg)
+    // A compaction a plugin starts may carry no list yet: pass `messages` on only when there is one.
+    const { messages: _given, ...rest } = e
+    const base = Array.isArray(e.messages) ? e : rest
+
+    let fellBack = false
+    let res
+    try {
+      res = await next({ ...base, instructions, ...(trimmed.count ? { messages: trimmed.messages } : {}) } as typeof e)
+    } catch (err) {
+      if (!trimmed.count) throw err
+      $.ui.log(`coach-watcher: trimmed transcript refused (${String(err)}); compacting untrimmed`)
+      fellBack = true
+      res = await next({ ...base, instructions } as typeof e)
+    }
+    if (res.skip !== undefined || e.trigger === 'precompute' || !res.messages) return res
+
+    let check: Compaction['check'] = 'n/a'
+    let messages = res.messages
+    if (!isSubagent) {
+      const w = await read($, work)
+      const c = checkSummary(res.messages ?? [], w, stateBlock(w, await sessionNotes($), latestAsks(msgs)))
+      check = c.check
+      messages = c.messages
+    }
+    await update($, comps, list => [...list, {
+      at: $.clock.now(), trigger: e.trigger, isSubagent,
+      tokensBefore: res.tokensBefore, tokensAfter: res.tokensAfter,
+      trimmedCount: fellBack ? 0 : trimmed.count, trimmedChars: fellBack ? 0 : trimmed.chars,
+      check, fellBack,
+    }].slice(-10))
+    if (!isSubagent) offeredAt = 0
+    return messages === res.messages ? res : { ...res, messages }
+  }).catch(($, e, next) => next(e)) // on any failure, the engine's own compaction stands
+
+  on('command.run', { command: 'coach' }, async ($, e) => {
+    if (e.args.trim() === 'compact') {
+      if (pending || compacting) return { text: 'A Coach compaction is already queued.' }
+      tries = 0
+      queueCompact($)
+      return { text: "Compaction queued: it runs with Coach's notes as soon as this command finishes." }
+    }
+    await refresh($, await $.session.usage())
+    const opened = await $.ui.open({ id: PANE, title: TITLE })
+    return { text: opened.isPlaced ? 'Context Coach pane opened.' : `Context Coach pane is waiting: ${opened.reason}` }
+  })
+
+  // ---------------------------------------------------------- pane (7)
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    const s = await read($, snap)
+    const w = await read($, work)
+    const cs = await read($, comps)
+    const p = s.percent
+    const color = s.level === 2 ? 'red' : s.level === 1 ? 'yellow' : 'green'
+    const width = 20
+    const filled = p === undefined ? 0 : Math.min(width, Math.round((p / 100) * width))
+    const fh = pct(s.limits, 'five_hour'), sd = pct(s.limits, 'seven_day')
+    const usageHigh = (fh ?? 0) >= cfg.usage_warn || (sd ?? 0) >= cfg.usage_warn
+    const advice =
+      s.level === 2 ? 'Run handoff now, then type /clear.'
+      : p !== undefined && p >= cfg.compact_at && cfg.compact_mode !== 'off' ? 'Type /coach compact at a clean break.'
+      : s.level === 1 ? 'Hand off at the next stopping point.'
+      : usageHigh ? 'Plan usage is high: prefer haiku/sonnet subagents.'
+      : 'All good.'
+    const k = (n?: number) => (n === undefined ? '?' : `${Math.round(n / 1000)}k`)
+
+    return (
+      <Box flexDirection="column">
+        <Text bold>Context</Text>
+        {p === undefined
+          ? <Text dimColor>No reading yet (fills in after the first reply).</Text>
+          : <Text color={color}>{'█'.repeat(filled)}{'░'.repeat(width - filled)} {p.toFixed(0)}%</Text>}
+        {s.tokens !== undefined && s.window > 0 &&
+          <Text dimColor>{k(s.tokens)} of {k(s.window)} tokens · warn {cfg.warn}% · compact {cfg.compact_at}% ({cfg.compact_mode}) · urgent {cfg.urgent}%</Text>}
+        <Text> </Text>
+        <Text bold>Plan usage</Text>
+        {fh === undefined && sd === undefined
+          ? <Text dimColor>No rate-limit reading.</Text>
+          : <Text color={usageHigh ? 'yellow' : undefined}>5h {fh?.toFixed(0) ?? '–'}% · 7d {sd?.toFixed(0) ?? '–'}%</Text>}
+        {s.usd !== undefined && <Text dimColor>Session cost ${s.usd.toFixed(2)}</Text>}
+        <Text> </Text>
+        <Text bold>Work tracked</Text>
+        <Text dimColor>{w.files.length} files edited · {w.oks.length} recent commands ok</Text>
+        {w.fails.length > 0 && <Text color="yellow">Open failures: {w.fails.map(f => f.cmd.slice(0, 40)).join(' · ')}</Text>}
+        <Text> </Text>
+        <Text bold>Compactions</Text>
+        {cs.length === 0
+          ? <Text dimColor>None yet this session.</Text>
+          : cs.slice(-3).map(c => (
+            <Text dimColor={c.check !== 'patched'}>
+              {c.trigger}{c.isSubagent ? ' (subagent)' : ''}: {k(c.tokensBefore)} → {k(c.tokensAfter)} · trimmed {c.trimmedCount} ({k(c.trimmedChars / 4)} tok) · check {c.check}{c.fellBack ? ' · trim refused' : ''}
+            </Text>
+          ))}
+        <Text> </Text>
+        <Text bold>Inbox</Text>
+        {s.inbox.length === 0
+          ? <Text dimColor>No notes waiting.</Text>
+          : <Text color="yellow">Notes waiting for: {s.inbox.join(', ')}</Text>}
+        <Text> </Text>
+        <Text color={color}>{advice}</Text>
+      </Box>
+    )
+  })
+}
