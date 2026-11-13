@@ -1,6 +1,6 @@
 {
   "name": "coach-watcher",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Context Coach watcher: live context, plan usage and inbox pane, and feeds coach.py exact numbers where no status line runs",
   "types": "./types/index.d.ts"
 }

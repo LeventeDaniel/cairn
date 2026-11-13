@@ -52,6 +52,30 @@ export type Offer = {
   cold?: boolean
 }
 
+/** One session of a repo, as `coach.py workspace` reads it. */
+export type WsSession = {
+  id: string
+  title: string
+  /** busy, idle or waiting while it runs (from `claude agents`); closed otherwise */
+  status: string
+  kind?: string | null
+  ageMin: number
+  tokens?: number | null
+  /** last activity inside the prompt cache TTL */
+  warm: boolean
+}
+
+/** Every registered repo at a glance (REPOS.md, SESSION.md, transcripts, `claude agents`). */
+export type Workspace = {
+  at: number
+  cacheTtlMin: number
+  repos: {
+    name: string; path: string; purpose: string; goal: string; next: string
+    sessions: WsSession[]; notes: number; worktrees: number
+  }[]
+  unregistered: { title: string; cwd?: string | null; status?: string | null; kind?: string | null }[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'coach-watcher': {
@@ -59,6 +83,7 @@ declare module 'claude-code' {
       work: Shaped<Work>
       comps: Shaped<Compaction[]>
       offer: Shaped<Offer | null>
+      ws: Shaped<Workspace | null>
     }
   }
 }

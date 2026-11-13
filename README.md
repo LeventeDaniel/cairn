@@ -20,6 +20,7 @@ Companion mod for Context Coach. It shows a live **Context Coach** pane (context
 - **Watches the prompt cache** (`smart` and `auto`). A reply re-reads the whole context; inside the cache window that read is cheap, after it the full context is read again at full price.
   - left idle with at least `cache_min_tokens` in context, it compacts 5 minutes before the cache expires, while compacting is still cheap (Not now still holds)
   - a session resumed after the cache expired, with a big context, gets an offer to compact before the first reply
+- **Workspace** section in the pane: every repo in `~/.claude/REPOS.md` with its goal (from SESSION.md), its live sessions (busy, idle or waiting, from `claude agents --json`), their size and whether their prompt cache is still warm, worktrees and notes waiting. It comes from `coach.py workspace --json`, run with the same Python as Context Coach's hook, at most once a minute. In a terminal: `python ~/.claude/coach/coach.py workspace`.
 - **Feeds coach.py** exact numbers in `~/.claude/coach/state/<session>.json`, because the Code tab runs no status line.
 
 ## Commands
@@ -38,7 +39,7 @@ These go in `~/.claude/coach/config.json`, next to Context Coach's own keys:
 | `compact_at` | `60` | % from which any calm turn end is |
 | `compact_hard` | `72` | % at which it compacts at the next turn end, mid-task or not |
 | `idle_minutes` | `3` | an unanswered offer runs after this many minutes with no new prompt |
-| `cache_ttl_minutes` | `60` | how long the prompt cache lasts after a reply (60 on plans with the 1-hour cache; set 5 if you're in usage overage). Below 15 the idle cache guard is off |
+| `cache_ttl_minutes` | `60` | how long the prompt cache lasts after a reply. Taken from Claude Code's `promptCacheTtl` setting (`5m` / `1h`) when that is set. Below 15 the idle cache guard is off, and Claude Code's own `idleCompaction` covers idle sessions |
 | `cache_min_tokens` | `60000` | contexts smaller than this are cheap to re-read cold, so the cache checks leave them alone |
 | `trim_over` | `4000` | tool results longer than this many characters get trimmed (errors: 4×) |
 | `trim_keep` | `800` | characters kept from a trimmed result |

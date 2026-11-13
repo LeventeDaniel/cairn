@@ -1,9 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage, SessionUsage } from 'claude-code'
 
-import type { Compaction, Offer, Snap, Work } from '../types'
+import type { Compaction, Offer, Snap, Work, Workspace } from '../types'
 
-const VERSION = '0.4.0'
+const VERSION = '0.5.0'
 const PANE = 'coach-watcher'
 const TITLE = 'Context Coach'
 // Tunable in ~/.claude/coach/config.json, next to Context Coach's own keys.
@@ -35,6 +35,8 @@ const comps = atom({ plugin: 'coach-watcher', key: 'comps' } as const,
   [] as Compaction[], { shape: 'comps-1' })
 const offer = atom({ plugin: 'coach-watcher', key: 'offer' } as const,
   null as Offer | null, { shape: 'offer-1' })
+const ws = atom({ plugin: 'coach-watcher', key: 'ws' } as const,
+  null as Workspace | null, { shape: 'ws-1' })
 
 /** ~/.claude, taken from where the mod lives (…/.claude/dev-mods/… or …/.claude/plugins/…). */
 function claudeDir(root: string): string {
@@ -62,10 +64,53 @@ let snoozedTo = 0      // "Not now": no new offer below this %
 let compactions = 0    // main-loop compactions done; a cache timer checks none ran since
 
 async function loadCfg($: EngineInterface, home: string) {
+  // The engine's own cache TTL setting, unless config.json names one.
+  let ttl: Partial<Cfg> = {}
   try {
-    cfg = { ...DEFAULTS, ...JSON.parse(await $.fs.read(`${home}/coach/config.json`)) }
+    const v = await $.settings.read({ key: 'promptCacheTtl' })
+    if (v === '5m') ttl = { cache_ttl_minutes: 5 }
+    else if (v === '1h') ttl = { cache_ttl_minutes: 60 }
+  } catch { /* settings unreadable: keep the default */ }
+  try {
+    cfg = { ...DEFAULTS, ...ttl, ...JSON.parse(await $.fs.read(`${home}/coach/config.json`)) }
   } catch {
-    cfg = { ...DEFAULTS }
+    cfg = { ...DEFAULTS, ...ttl }
+  }
+}
+
+// ------------------------------------------------------------ workspace (9)
+let wsAt = 0
+let wsBusy = false
+
+/** Python and coach.py, read off the UserPromptSubmit hook that runs Context Coach. */
+async function coachCommand($: EngineInterface): Promise<string[] | undefined> {
+  const hooks = (await $.settings.read({ key: 'hooks' })) as Record<string, { hooks?: { command?: string }[] }[]> | undefined
+  for (const group of hooks?.UserPromptSubmit ?? []) {
+    for (const h of group.hooks ?? []) {
+      const m = h.command?.match(/^\s*("[^"]+"|\S+)\s+("[^"]+"|\S+coach\.py)\b/)
+      if (m) return [m[1]!.replace(/"/g, ''), m[2]!.replace(/"/g, '')]
+    }
+  }
+  return undefined
+}
+
+/** Every registered repo's goal, sessions and notes, from `coach.py workspace --json`; at most once a minute. */
+async function refreshWorkspace($: EngineInterface, force = false) {
+  const now = await $.clock.now()
+  if (wsBusy || (!force && now - wsAt < 60000)) return
+  wsBusy = true
+  wsAt = now
+  try {
+    const cmd = await coachCommand($)
+    if (!cmd) return
+    const r = await $.process.run([...cmd, 'workspace', '--json'], { timeoutMs: 45000 })
+    if (r.exitCode !== 0) throw new Error(r.stderr.slice(0, 300))
+    const w = JSON.parse(r.stdout) as Workspace
+    await update($, ws, () => w)
+  } catch (err) {
+    $.ui.log(`coach-watcher: workspace refresh failed: ${String(err)}`)
+  } finally {
+    wsBusy = false
   }
 }
 
@@ -319,6 +364,7 @@ async function idleCompact($: EngineInterface, seq: number) {
 
 // ------------------------------------------------------------ prompt cache (8)
 const k = (n?: number) => (n === undefined ? '?' : `${Math.round(n / 1000)}k`)
+const ago = (m: number) => (m < 120 ? `${m} min` : m < 2880 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`)
 const cacheOn = () => (cfg.compact_mode === 'smart' || cfg.compact_mode === 'auto') && cfg.cache_ttl_minutes >= 15
 
 /**
@@ -449,6 +495,7 @@ export const register: Register = on => {
     } catch (err) {
       $.ui.log(`coach-watcher: cold-start check failed: ${String(err)}`)
     }
+    void refreshWorkspace($, true)
     return ran
   })
 
@@ -477,6 +524,7 @@ export const register: Register = on => {
     }
     armCacheGuard($)
     await noteEnd($)
+    void refreshWorkspace($)
     return ran
   })
 
@@ -540,6 +588,7 @@ export const register: Register = on => {
       return { text: "Compaction queued: it runs with Coach's notes as soon as this command finishes." }
     }
     await refresh($, await $.session.usage())
+    await refreshWorkspace($, true)
     const opened = await $.ui.open({ id: PANE, title: TITLE })
     return { text: opened.isPlaced ? 'Context Coach pane opened.' : `Context Coach pane is waiting: ${opened.reason}` }
   })
@@ -568,6 +617,7 @@ export const register: Register = on => {
     const w = await read($, work)
     const cs = await read($, comps)
     const o = await read($, offer)
+    const w2 = await read($, ws)
     const p = s.percent
     const color = s.level === 2 ? 'red' : s.level === 1 ? 'yellow' : 'green'
     const width = 20
@@ -609,6 +659,27 @@ export const register: Register = on => {
               {c.trigger}{c.isSubagent ? ' (subagent)' : ''}: {k(c.tokensBefore)} → {k(c.tokensAfter)} · trimmed {c.trimmedCount} ({k(c.trimmedChars / 4)} tok) · check {c.check}{c.fellBack ? ' · trim refused' : ''}
             </Text>
           ))}
+        <Text> </Text>
+        <Text bold>Workspace</Text>
+        {!w2
+          ? <Text dimColor>Loading (coach.py workspace)…</Text>
+          : w2.repos.map(r => {
+            const live = r.sessions.filter(x => x.status === 'busy' || x.status === 'idle' || x.status === 'waiting')
+            return (
+              <Box flexDirection="column">
+                <Text>{r.name}{r.notes ? ` · ${r.notes} note(s) waiting` : ''}{r.worktrees ? ` · ${r.worktrees} worktree(s)` : ''}</Text>
+                <Text dimColor>  goal: {r.goal ? r.goal.slice(0, 70) : 'none set'}</Text>
+                {live.map(x => (
+                  <Text color={x.status === 'waiting' ? 'yellow' : undefined} dimColor={x.status === 'idle' && !x.warm}>
+                    {'  '}{x.status === 'busy' ? '●' : x.status === 'waiting' ? '!' : '○'} {x.title.slice(0, 40)} · {x.status} · {k(x.tokens ?? undefined)} · cache {x.warm ? 'warm' : 'cold'}
+                  </Text>
+                ))}
+                {live.length === 0 && <Text dimColor>  no live session{r.sessions.length ? ` · last ${ago(r.sessions[0]!.ageMin)} ago` : ''}</Text>}
+              </Box>
+            )
+          })}
+        {w2 && w2.unregistered.length > 0 &&
+          <Text dimColor>Not in REPOS.md: {w2.unregistered.map(u => `${u.title.slice(0, 30)} (${u.status})`).join(' · ')}</Text>}
         <Text> </Text>
         <Text bold>Inbox</Text>
         {s.inbox.length === 0
