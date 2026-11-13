@@ -74,6 +74,15 @@ export type Workspace = {
     sessions: WsSession[]; notes: number; worktrees: number
   }[]
   unregistered: { title: string; cwd?: string | null; status?: string | null; kind?: string | null }[]
+  board?: BoardTask[]
+}
+
+/** A row of Cairn Home's task board (~/.claude/cairn/board.json), via `cairn.py workspace --json`. */
+export type BoardTask = {
+  id: string; repo: string; title: string; kind: string; model: string; effort: string
+  session: string; cliSession?: string
+  status: 'running' | 'waiting' | 'done' | 'queued' | 'closed'
+  started: number; updated: number; report: string
 }
 
 declare module 'claude-code' {

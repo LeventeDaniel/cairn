@@ -21,6 +21,8 @@ Companion mod for Cairn. It shows a live **Cairn** pane (context fill, plan usag
   - left idle with at least `cache_min_tokens` in context, it compacts 5 minutes before the cache expires, while compacting is still cheap (Not now still holds)
   - a session resumed after the cache expired, with a big context, gets an offer to compact before the first reply
 - **Workspace** section in the pane: every repo in `~/.claude/REPOS.md` with its goal (from SESSION.md), its live sessions (busy, idle or waiting, from `claude agents --json`), their size and whether their prompt cache is still warm, worktrees and notes waiting. It comes from `cairn.py workspace --json`, run with the same Python as Cairn's hook, at most once a minute. In a terminal: `python ~/.claude/cairn/cairn.py workspace`.
+- **Board** under Workspace: the tasks Cairn Home started (`~/.claude/cairn/board.json`): running, waiting on you, queued, recently done, each with its model/effort and last one-line report.
+- **Cairn Home** (a session in `~/.claude/cairn/home`) holds only the board, so it compacts much earlier: see the `home_compact_*` settings.
 - **Feeds cairn.py** exact numbers in `~/.claude/cairn/state/<session>.json`, because the Code tab runs no status line.
 
 ## Commands
@@ -43,6 +45,7 @@ These go in `~/.claude/cairn/config.json`, next to Cairn's own keys:
 | `cache_min_tokens` | `60000` | contexts smaller than this are cheap to re-read cold, so the cache checks leave them alone |
 | `trim_over` | `4000` | tool results longer than this many characters get trimmed (errors: 4×) |
 | `trim_keep` | `800` | characters kept from a trimmed result |
+| `home_compact_soft` / `home_compact_at` / `home_compact_hard` | `15` / `25` / `50` | the three thresholds above, for a session in Cairn Home's folder |
 | `warn` / `urgent` / `usage_warn` | `50` / `70` / `80` | shared with Cairn |
 
 ## Install

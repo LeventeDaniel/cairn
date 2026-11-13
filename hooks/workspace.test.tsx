@@ -23,6 +23,14 @@ const WS = {
       sessions: [{ id: 'b', title: 'fix login page', status: 'closed', ageMin: 300, tokens: 90000, warm: false }] },
   ],
   unregistered: [],
+  board: [
+    { id: 't2', repo: 'example-b', title: 'example-b: fix export', kind: 'normal', model: 'sonnet', effort: 'medium',
+      session: 'local_x', status: 'waiting', started: 1, updated: 1, report: 'needs your review' },
+    { id: 't3', repo: 'example-a', title: 'example-a: new header', kind: 'small', model: 'sonnet', effort: 'low',
+      session: 'local_y', status: 'running', started: 2, updated: 2, report: '' },
+    { id: 't1', repo: 'example-a', title: 'example-a: old task', kind: 'small', model: 'sonnet', effort: 'low',
+      session: 'local_z', status: 'done', started: 0, updated: 0, report: 'committed' },
+  ],
 }
 
 function engine(on: any, settings: Record<string, unknown>, long = { n: 0 }) {
@@ -98,4 +106,15 @@ test('with the default TTL the guard is armed at each turn end', async ($, on) =
   await $.turn.complete({ turnId: 't', reason: 'answer', answer: 'done', durationMs: 1, isAborted: false } as any)
   await settle()
   expect(long.n).toBe(1)
+})
+
+test("the pane shows Cairn Home's board: waiting, running and recent done rows", async ($, on) => {
+  engine(on, { hooks: HOOKS })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' } as any)
+  expect((await ui.find({ type: 'Text', text: /Board \(Cairn Home\)/ }))?.text).toContain('1 running · 1 waiting on you')
+  expect((await ui.find({ type: 'Text', text: /t2 example-b: fix export/ }))?.text).toContain('needs your review')
+  expect((await ui.find({ type: 'Text', text: /t1 example-a: old task/ }))?.text).toContain('done')
+  await ui.unmount()
 })

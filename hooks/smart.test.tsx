@@ -12,7 +12,7 @@ const BAND = {
 type Seen = { compacts: number; toasts: string[]; release: () => void; releaseCache: () => void; stored: Record<string, unknown> }
 
 /** An engine at `percent` context; long timers (the idle one) wait for `seen.release()`. */
-function engine(on: any, percent: number, opt: { now?: number; ends?: unknown } = {}): Seen {
+function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; cwd?: string } = {}): Seen {
   const seen: Seen = { compacts: 0, toasts: [], release: () => {}, releaseCache: () => {}, stored: {} }
   const gate = new Promise<void>(r => { seen.release = r })
   const cacheGate = new Promise<void>(r => { seen.releaseCache = r })
@@ -23,6 +23,7 @@ function engine(on: any, percent: number, opt: { now?: number; ends?: unknown } 
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 's1' }))
+  on('session.cwd', () => ({ value: opt.cwd ?? 'C:/r/example-a' }))
   on('session.usage', () => ({ value: {
     startedAt: 0, context: { tokens: percent * 10000, window: 1000000, percent }, rateLimits: [] } }))
   on('fs.read', () => ({ value: '{}' }))
@@ -226,5 +227,34 @@ test('a session resumed while the cache is still warm gets no offer', async ($, 
   await settle()
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
   expect(await ui.find({ type: 'Text', text: /compact/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('in Cairn Home a wrapped-up turn at 20% is already offered (home thresholds)', async ($, on) => {
+  engine(on, 20, { cwd: String.raw`C:\Users\me\.claude\cairn\home` })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' } as any))
+  await settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect((await ui.find({ type: 'Text', text: /good moment to compact/ }))).toBeTruthy()
+  await ui.unmount()
+})
+
+test('in Cairn Home 50% is past the hard limit: compacts at the turn end', async ($, on) => {
+  const seen = engine(on, 55, { cwd: 'C:/Users/me/.claude/cairn/home' })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'Read', file_path: 'C:/a.ts' } as any))
+  await settle()
+  expect(seen.compacts).toBe(1)
+})
+
+test('in a repo, a wrapped-up turn at 20% stays below compact_soft', async ($, on) => {
+  const seen = engine(on, 20)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' } as any))
+  await settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect((await ui.find({ type: 'Text', text: /good moment to compact/ }))).toBeFalsy()
+  expect(seen.compacts).toBe(0)
   await ui.unmount()
 })

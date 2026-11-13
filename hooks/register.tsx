@@ -3,7 +3,7 @@ import type { EngineInterface, Register, SessionMessage, SessionUsage } from 'cl
 
 import type { Compaction, Offer, Snap, Work, Workspace } from '../types'
 
-const VERSION = '0.6.0'
+const VERSION = '0.7.0'
 const PANE = 'cairn'
 const TITLE = 'Cairn'
 // Tunable in ~/.claude/cairn/config.json, next to Cairn's own keys.
@@ -23,6 +23,10 @@ const DEFAULTS = {
   // next reply re-reads the whole context at full price.
   cache_ttl_minutes: 60,
   cache_min_tokens: 60000, // below this a cold re-read is cheap: leave the context alone
+  // Cairn Home (a session in ~/.claude/cairn/home) holds only the board: compact it early and often.
+  home_compact_soft: 15,
+  home_compact_at: 25,
+  home_compact_hard: 50,
 }
 type Cfg = typeof DEFAULTS
 
@@ -63,6 +67,17 @@ let turnSeq = 0        // main-loop turns started; an idle timer checks nothing 
 let snoozedTo = 0      // "Not now": no new offer below this %
 let compactions = 0    // main-loop compactions done; a cache timer checks none ran since
 
+/** True when this session runs in Cairn Home's folder (~/.claude/cairn/home). */
+async function inHome($: EngineInterface, home: string): Promise<boolean> {
+  try {
+    const norm = (x: string) => x.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+    const cwd = norm(await $.session.cwd())
+    return cwd === norm(`${home}/cairn/home`) || cwd.endsWith('/.claude/cairn/home')
+  } catch {
+    return false
+  }
+}
+
 async function loadCfg($: EngineInterface, home: string) {
   // The engine's own cache TTL setting, unless config.json names one.
   let ttl: Partial<Cfg> = {}
@@ -75,6 +90,9 @@ async function loadCfg($: EngineInterface, home: string) {
     cfg = { ...DEFAULTS, ...ttl, ...JSON.parse(await $.fs.read(`${home}/cairn/config.json`)) }
   } catch {
     cfg = { ...DEFAULTS, ...ttl }
+  }
+  if (await inHome($, home)) {
+    cfg = { ...cfg, compact_soft: cfg.home_compact_soft, compact_at: cfg.home_compact_at, compact_hard: cfg.home_compact_hard }
   }
 }
 
@@ -678,6 +696,21 @@ export const register: Register = on => {
               </Box>
             )
           })}
+        {w2 && (w2.board ?? []).length > 0 && (() => {
+          const b = w2.board ?? []
+          const open = b.filter(t => t.status !== 'done' && t.status !== 'closed')
+          const done = b.filter(t => t.status === 'done').slice(0, 3)
+          return (
+            <Box flexDirection="column">
+              <Text>Board (Cairn Home) · {open.filter(t => t.status === 'running').length} running · {open.filter(t => t.status === 'waiting').length} waiting on you</Text>
+              {[...open, ...done].map(t => (
+                <Text color={t.status === 'waiting' ? 'yellow' : undefined} dimColor={t.status === 'done' || t.status === 'queued'}>
+                  {'  '}{t.status === 'running' ? '●' : t.status === 'waiting' ? '!' : t.status === 'queued' ? '…' : '✓'} {t.id} {t.title.slice(0, 40)} · {t.status} · {t.model}/{t.effort}{t.report ? ` · ${t.report.slice(0, 50)}` : ''}
+                </Text>
+              ))}
+            </Box>
+          )
+        })()}
         {w2 && w2.unregistered.length > 0 &&
           <Text dimColor>Not in REPOS.md: {w2.unregistered.map(u => `${u.title.slice(0, 30)} (${u.status})`).join(' · ')}</Text>}
         <Text> </Text>
