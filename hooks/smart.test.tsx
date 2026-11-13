@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 const BAND = {
-  plugin: 'coach-watcher',
+  plugin: 'cairn',
   component: 'AbovePrompt',
   props: {
     hasSurvey: false, isCollapsed: false, isWorking: false, bodyColumns: 100, maxRows: 4,
@@ -19,7 +19,7 @@ function engine(on: any, percent: number, opt: { now?: number; ends?: unknown } 
   if (opt.ends) seen.stored.lastEnd = opt.ends
   on('store.get', (_: any, e: any) => ({ value: seen.stored[e.key] }))
   on('store.set', (_: any, e: any) => { seen.stored[e.key] = e.value; return { value: undefined } })
-  on('command.register', () => ({ value: { command: 'coach' } }))
+  on('command.register', () => ({ value: { command: 'cairn' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 's1' }))

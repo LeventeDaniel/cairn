@@ -1,5 +1,5 @@
 {
-  "name": "context-watcher",
+  "name": "cairn",
   "owner": { "name": "LeventeDaniel" },
-  "plugins": [{ "name": "coach-watcher", "source": "./" }]
+  "plugins": [{ "name": "cairn", "source": "./" }]
 }

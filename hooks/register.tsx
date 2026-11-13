@@ -3,18 +3,18 @@ import type { EngineInterface, Register, SessionMessage, SessionUsage } from 'cl
 
 import type { Compaction, Offer, Snap, Work, Workspace } from '../types'
 
-const VERSION = '0.5.0'
-const PANE = 'coach-watcher'
-const TITLE = 'Context Coach'
-// Tunable in ~/.claude/coach/config.json, next to Context Coach's own keys.
+const VERSION = '0.6.0'
+const PANE = 'cairn'
+const TITLE = 'Cairn'
+// Tunable in ~/.claude/cairn/config.json, next to Cairn's own keys.
 const DEFAULTS = {
   warn: 50, urgent: 70, usage_warn: 80,
-  // smart: Coach decides (clean breaks, idle time, hard limit); ask: offer only;
+  // smart: Cairn decides (clean breaks, idle time, hard limit); ask: offer only;
   // auto: compact at compact_at whatever the state; off: never
   compact_mode: 'smart' as 'smart' | 'ask' | 'auto' | 'off',
   compact_soft: 40,    // % from which a finished task is a reason to compact
   compact_at: 60,      // % from which any calm turn end is
-  compact_hard: 72,    // % at which Coach compacts at the next turn end, mid-task or not
+  compact_hard: 72,    // % at which Cairn compacts at the next turn end, mid-task or not
   idle_minutes: 3,     // an offer nobody answered runs after this long with no new prompt
   trim_over: 4000,     // tool results longer than this (chars) are trimmed before summarizing
   trim_keep: 800,      // chars kept from a trimmed result (head + tail)
@@ -26,16 +26,16 @@ const DEFAULTS = {
 }
 type Cfg = typeof DEFAULTS
 
-const snap = atom({ plugin: 'coach-watcher', key: 'snap' } as const, {
+const snap = atom({ plugin: 'cairn', key: 'snap' } as const, {
   window: 0, limits: [], level: 0, inbox: [], at: 0,
 } as Snap, { shape: 'snap-1' })
-const work = atom({ plugin: 'coach-watcher', key: 'work' } as const,
+const work = atom({ plugin: 'cairn', key: 'work' } as const,
   { files: [], fails: [], oks: [] } as Work, { shape: 'work-1' })
-const comps = atom({ plugin: 'coach-watcher', key: 'comps' } as const,
+const comps = atom({ plugin: 'cairn', key: 'comps' } as const,
   [] as Compaction[], { shape: 'comps-1' })
-const offer = atom({ plugin: 'coach-watcher', key: 'offer' } as const,
+const offer = atom({ plugin: 'cairn', key: 'offer' } as const,
   null as Offer | null, { shape: 'offer-1' })
-const ws = atom({ plugin: 'coach-watcher', key: 'ws' } as const,
+const ws = atom({ plugin: 'cairn', key: 'ws' } as const,
   null as Workspace | null, { shape: 'ws-1' })
 
 /** ~/.claude, taken from where the mod lives (…/.claude/dev-mods/… or …/.claude/plugins/…). */
@@ -45,7 +45,7 @@ function claudeDir(root: string): string {
   return i >= 0 ? p.slice(0, i + '/.claude'.length) : p
 }
 
-/** Same rule as coach.py's safe_id, so both name the same state file. */
+/** Same rule as cairn.py's safe_id, so both name the same state file. */
 const safeId = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80) || 'unknown'
 
 const pct = (limits: Snap['limits'], kind: string) =>
@@ -72,7 +72,7 @@ async function loadCfg($: EngineInterface, home: string) {
     else if (v === '1h') ttl = { cache_ttl_minutes: 60 }
   } catch { /* settings unreadable: keep the default */ }
   try {
-    cfg = { ...DEFAULTS, ...ttl, ...JSON.parse(await $.fs.read(`${home}/coach/config.json`)) }
+    cfg = { ...DEFAULTS, ...ttl, ...JSON.parse(await $.fs.read(`${home}/cairn/config.json`)) }
   } catch {
     cfg = { ...DEFAULTS, ...ttl }
   }
@@ -82,33 +82,33 @@ async function loadCfg($: EngineInterface, home: string) {
 let wsAt = 0
 let wsBusy = false
 
-/** Python and coach.py, read off the UserPromptSubmit hook that runs Context Coach. */
-async function coachCommand($: EngineInterface): Promise<string[] | undefined> {
+/** Python and cairn.py (coach.py before the rename), read off the UserPromptSubmit hook that runs Cairn. */
+async function cairnCommand($: EngineInterface): Promise<string[] | undefined> {
   const hooks = (await $.settings.read({ key: 'hooks' })) as Record<string, { hooks?: { command?: string }[] }[]> | undefined
   for (const group of hooks?.UserPromptSubmit ?? []) {
     for (const h of group.hooks ?? []) {
-      const m = h.command?.match(/^\s*("[^"]+"|\S+)\s+("[^"]+"|\S+coach\.py)\b/)
+      const m = h.command?.match(/^\s*("[^"]+"|\S+)\s+("[^"]+"|\S+(?:cairn|coach)\.py)\b/)
       if (m) return [m[1]!.replace(/"/g, ''), m[2]!.replace(/"/g, '')]
     }
   }
   return undefined
 }
 
-/** Every registered repo's goal, sessions and notes, from `coach.py workspace --json`; at most once a minute. */
+/** Every registered repo's goal, sessions and notes, from `cairn.py workspace --json`; at most once a minute. */
 async function refreshWorkspace($: EngineInterface, force = false) {
   const now = await $.clock.now()
   if (wsBusy || (!force && now - wsAt < 60000)) return
   wsBusy = true
   wsAt = now
   try {
-    const cmd = await coachCommand($)
+    const cmd = await cairnCommand($)
     if (!cmd) return
     const r = await $.process.run([...cmd, 'workspace', '--json'], { timeoutMs: 45000 })
     if (r.exitCode !== 0) throw new Error(r.stderr.slice(0, 300))
     const w = JSON.parse(r.stdout) as Workspace
     await update($, ws, () => w)
   } catch (err) {
-    $.ui.log(`coach-watcher: workspace refresh failed: ${String(err)}`)
+    $.ui.log(`cairn: workspace refresh failed: ${String(err)}`)
   } finally {
     wsBusy = false
   }
@@ -168,7 +168,7 @@ async function sessionNotes($: EngineInterface): Promise<{ goal?: string; next?:
 function latestAsks(messages: readonly SessionMessage[]): string[] {
   return messages
     .filter(m => m.role === 'user' && m.text.trim() && !(m.toolResults?.length) &&
-      !m.text.startsWith('<') && !m.text.startsWith('[Context Coach'))
+      !m.text.startsWith('<') && !m.text.startsWith('[Cairn'))
     .slice(-4)
     .map(m => oneLine(m.text, 300))
 }
@@ -187,13 +187,13 @@ function stateBlock(w: Work, notes: { goal?: string; next?: string }, asks: stri
 
 async function mainInstructions($: EngineInterface, messages: readonly SessionMessage[]): Promise<string> {
   const w = await read($, work)
-  return '[Context Coach] Keep these facts exactly in the summary, with exact paths and commands:\n' +
+  return '[Cairn] Keep these facts exactly in the summary, with exact paths and commands:\n' +
     stateBlock(w, await sessionNotes($), latestAsks(messages)) +
     '\nKeep: the goal, decisions and why, open errors, exact file paths, what is next. ' +
     'Drop: raw file contents, long logs, search dumps, attempts that were superseded.'
 }
 
-const SUBAGENT_INSTRUCTIONS = '[Context Coach] This is a subagent transcript. Keep only: the task it was given, ' +
+const SUBAGENT_INSTRUCTIONS = '[Cairn] This is a subagent transcript. Keep only: the task it was given, ' +
   'its findings with file:line references, conclusions, and anything still unresolved. Drop exploration, ' +
   'raw file contents and dead ends.'
 
@@ -219,7 +219,7 @@ function trimMessages(messages: readonly SessionMessage[], c: Cfg) {
       return {
         tool_use_id: r.tool_use_id, isError: r.isError,
         text: r.text.slice(0, head) +
-          `\n…[Context Coach trimmed ${cut} chars of ${label.get(r.tool_use_id) ?? 'tool output'}; re-run it if needed]…\n` +
+          `\n…[Cairn trimmed ${cut} chars of ${label.get(r.tool_use_id) ?? 'tool output'}; re-run it if needed]…\n` +
           r.text.slice(-tail),
       }
     })
@@ -238,7 +238,7 @@ function checkSummary(messages: readonly SessionMessage[], w: Work, block: strin
   if (!missing.length) return { messages, check: 'ok' as const }
   // Patch the summary itself (the first plain message) so no extra turn is added.
   const i = messages.findIndex(m => !m.toolUses.length && !(m.toolResults?.length))
-  const note = '\n\n[Context Coach] State carried across this compaction:\n' + block
+  const note = '\n\n[Cairn] State carried across this compaction:\n' + block
   const patched = i >= 0
     ? messages.map((m, j) => (j === i ? { role: m.role, text: m.text + note, toolUses: [] } as SessionMessage : m))
     : [{ role: 'user', text: note.trim(), toolUses: [] } as SessionMessage, ...messages]
@@ -268,9 +268,9 @@ async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'ra
   const fh = pct(s.limits, 'five_hour'), sd = pct(s.limits, 'seven_day')
   if (fh !== undefined) parts.push(`5h ${fh.toFixed(0)}%`)
   if (sd !== undefined) parts.push(`7d ${sd.toFixed(0)}%`)
-  $.ui.status(parts.length ? 'Coach · ' + parts.join(' · ') : undefined)
+  $.ui.status(parts.length ? 'Cairn · ' + parts.join(' · ') : undefined)
 
-  // With compaction on, Coach's own decisions speak for it (decide(), the band).
+  // With compaction on, Cairn's own decisions speak for it (decide(), the band).
   if (level > lastLevel && cfg.compact_mode === 'off') {
     $.ui.toast(level === 2
       ? `Context ${p!.toFixed(0)}% full: save with handoff, then /clear`
@@ -280,15 +280,15 @@ async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'ra
 
   const state = {
     t: Date.now() / 1000, pct: p ?? null, window: s.window || null,
-    five_hour: fh ?? null, seven_day: sd ?? null, model: null, via: 'coach-watcher',
+    five_hour: fh ?? null, seven_day: sd ?? null, model: null, via: 'cairn',
   }
   try {
     const sid = safeId(await $.session.id())
     const text = JSON.stringify(state)
-    await $.fs.write(`${home}/coach/state/${sid}.json`, text)
-    await $.fs.write(`${home}/coach/state/last.json`, text)
+    await $.fs.write(`${home}/cairn/state/${sid}.json`, text)
+    await $.fs.write(`${home}/cairn/state/last.json`, text)
   } catch (err) {
-    $.ui.log(`coach-watcher: could not write state: ${String(err)}`)
+    $.ui.log(`cairn: could not write state: ${String(err)}`)
   }
   return p
 }
@@ -333,8 +333,8 @@ async function decide($: EngineInterface) {
   const w = await read($, work)
   const v = verdict(p, cfg.compact_mode, cfg, done, w.fails.length, snoozedTo)
   try {
-    // The last decision, for anyone checking why Coach did or didn't compact.
-    await $.fs.write(`${claudeDir($.plugin.root)}/coach/state/compact-decision.json`, JSON.stringify({
+    // The last decision, for anyone checking why Cairn did or didn't compact.
+    await $.fs.write(`${claudeDir($.plugin.root)}/cairn/state/compact-decision.json`, JSON.stringify({
       t: Date.now() / 1000, version: VERSION, pct: p, mode: cfg.compact_mode, done, openFails: w.fails.length,
       snoozedTo, act: v.act, reason: v.reason,
     }))
@@ -342,7 +342,7 @@ async function decide($: EngineInterface) {
   if (v.act === 'wait') return
   if (v.act === 'now') {
     await update($, offer, () => null)
-    $.ui.toast(`Coach is compacting: ${v.reason}`)
+    $.ui.toast(`Cairn is compacting: ${v.reason}`)
     queueCompact($)
     return
   }
@@ -358,7 +358,7 @@ async function decide($: EngineInterface) {
 async function idleCompact($: EngineInterface, seq: number) {
   if (seq !== turnSeq || pending || compacting || !(await read($, offer))) return
   await update($, offer, () => null)
-  $.ui.toast("Coach compacted while you were away: see the Context Coach pane")
+  $.ui.toast("Cairn compacted while you were away: see the Cairn pane")
   queueCompact($)
 }
 
@@ -384,7 +384,7 @@ async function cacheGuard($: EngineInterface, seq: number, done: number) {
   if (percent < snoozedTo) return // "Not now" stands
   if (tokens < cfg.cache_min_tokens) return
   await update($, offer, () => null)
-  $.ui.toast(`Coach compacted before the prompt cache expired: ${k(tokens)} tokens would have been re-read at full price`)
+  $.ui.toast(`Cairn compacted before the prompt cache expired: ${k(tokens)} tokens would have been re-read at full price`)
   queueCompact($)
 }
 
@@ -402,7 +402,7 @@ async function noteEnd($: EngineInterface) {
     const keep = Object.entries(ends).slice(-30)
     await $.store.set('lastEnd', Object.fromEntries(keep))
   } catch (err) {
-    $.ui.log(`coach-watcher: could not note the turn end: ${String(err)}`)
+    $.ui.log(`cairn: could not note the turn end: ${String(err)}`)
   }
 }
 
@@ -457,20 +457,20 @@ async function runCompact($: EngineInterface) {
   compacting = true
   try {
     // Through the built-in /compact, not $.session.compact(): a mod's own call skips
-    // the mod's own session.compact hook, which is where Coach's notes go in.
+    // the mod's own session.compact hook, which is where Cairn's notes go in.
     // The engine queues it until the session is idle.
     await $.command.run({ command: 'compact', args: '' })
     pending = false
     tries = 0
     compactions++
-    $.ui.toast("Compacted with Coach's notes: see the Context Coach pane")
+    $.ui.toast("Compacted with Cairn's notes: see the Cairn pane")
   } catch (err) {
     tries++
     if (tries > 6) {
       pending = false
       tries = 0
-      $.ui.toast("Coach couldn't compact; try /compact instead")
-      $.ui.log(`coach-watcher: compaction gave up: ${String(err)}`)
+      $.ui.toast("Cairn couldn't compact; try /compact instead")
+      $.ui.log(`cairn: compaction gave up: ${String(err)}`)
     }
     // otherwise still pending: the turn.complete hook (or the next timer) retries
   } finally {
@@ -483,17 +483,17 @@ async function runCompact($: EngineInterface) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const ran = await next(e)
-    await $.command.register({ name: 'coach', description: 'Context Coach: open the pane, or `/coach compact` to compact with Coach\'s notes' })
+    await $.command.register({ name: 'cairn', description: 'Cairn: open the pane, or `/cairn compact` to compact with Cairn\'s notes' })
     void $.ui.open({ id: PANE, title: TITLE })
     try {
       await refresh($, await $.session.usage())
     } catch (err) {
-      $.ui.log(`coach-watcher: first measure failed: ${String(err)}`)
+      $.ui.log(`cairn: first measure failed: ${String(err)}`)
     }
     try {
       await coldCheck($)
     } catch (err) {
-      $.ui.log(`coach-watcher: cold-start check failed: ${String(err)}`)
+      $.ui.log(`cairn: cold-start check failed: ${String(err)}`)
     }
     void refreshWorkspace($, true)
     return ran
@@ -509,7 +509,7 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // Each main-loop turn end is where Coach decides; a queued compaction that
+  // Each main-loop turn end is where Cairn decides; a queued compaction that
   // met a running turn tries again here too.
   on('turn.complete', async ($, e, next) => {
     const ran = await next(e)
@@ -519,7 +519,7 @@ export const register: Register = on => {
       try {
         await decide($)
       } catch (err) {
-        $.ui.log(`coach-watcher: compaction decision failed: ${String(err)}`)
+        $.ui.log(`cairn: compaction decision failed: ${String(err)}`)
       }
     }
     armCacheGuard($)
@@ -533,7 +533,7 @@ export const register: Register = on => {
     try {
       await record($, e.tool, e as unknown as Record<string, unknown>, ran)
     } catch (err) {
-      $.ui.log(`coach-watcher: could not record ${e.tool}: ${String(err)}`)
+      $.ui.log(`cairn: could not record ${e.tool}: ${String(err)}`)
     }
     return ran
   }).catch(($, e, next) => next(e)) // never in the way: replays or runs the call as normal
@@ -543,8 +543,8 @@ export const register: Register = on => {
     await loadCfg($, home)
     const isSubagent = e.agentId !== undefined
     const msgs = e.messages ?? []
-    const coach = isSubagent ? SUBAGENT_INSTRUCTIONS : await mainInstructions($, msgs)
-    const instructions = e.instructions ? `${e.instructions}\n\n${coach}` : coach
+    const notes = isSubagent ? SUBAGENT_INSTRUCTIONS : await mainInstructions($, msgs)
+    const instructions = e.instructions ? `${e.instructions}\n\n${notes}` : notes
     const trimmed = trimMessages(msgs, cfg)
     // A compaction a plugin starts may carry no list yet: pass `messages` on only when there is one.
     const { messages: _given, ...rest } = e
@@ -556,7 +556,7 @@ export const register: Register = on => {
       res = await next({ ...base, instructions, ...(trimmed.count ? { messages: trimmed.messages } : {}) } as typeof e)
     } catch (err) {
       if (!trimmed.count) throw err
-      $.ui.log(`coach-watcher: trimmed transcript refused (${String(err)}); compacting untrimmed`)
+      $.ui.log(`cairn: trimmed transcript refused (${String(err)}); compacting untrimmed`)
       fellBack = true
       res = await next({ ...base, instructions } as typeof e)
     }
@@ -581,16 +581,16 @@ export const register: Register = on => {
     return messages === res.messages ? res : { ...res, messages }
   }).catch(($, e, next) => next(e)) // on any failure, the engine's own compaction stands
 
-  on('command.run', { command: 'coach' }, async ($, e) => {
+  on('command.run', { command: 'cairn' }, async ($, e) => {
     if (e.args.trim() === 'compact') {
-      if (pending || compacting) return { text: 'A Coach compaction is already queued.' }
+      if (pending || compacting) return { text: 'A Cairn compaction is already queued.' }
       await acceptOffer($)
-      return { text: "Compaction queued: it runs with Coach's notes as soon as this command finishes." }
+      return { text: "Compaction queued: it runs with Cairn's notes as soon as this command finishes." }
     }
     await refresh($, await $.session.usage())
     await refreshWorkspace($, true)
     const opened = await $.ui.open({ id: PANE, title: TITLE })
-    return { text: opened.isPlaced ? 'Context Coach pane opened.' : `Context Coach pane is waiting: ${opened.reason}` }
+    return { text: opened.isPlaced ? 'Cairn pane opened.' : `Cairn pane is waiting: ${opened.reason}` }
   })
 
   // ---------------------------------------------------------- band (5)
@@ -599,7 +599,7 @@ export const register: Register = on => {
     if (!o || e.props.hasSurvey || e.props.isWorking || pending || compacting) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     const idle = cfg.compact_mode === 'smart' && !o.cold ? ` · runs by itself in ${cfg.idle_minutes} min if you're away` : ''
-    const say = o.cold ? `Coach: compact before you continue (${o.reason})` : `Coach: good moment to compact (${o.reason})`
+    const say = o.cold ? `Cairn: compact before you continue (${o.reason})` : `Cairn: good moment to compact (${o.reason})`
     return (
       <Box>
         <Text>{say}{idle} </Text>
@@ -627,8 +627,8 @@ export const register: Register = on => {
     const advice =
       s.level === 2 && cfg.compact_mode === 'off' ? 'Run handoff now, then type /clear.'
       : o ? `Good moment to compact (${o.reason}): use the band above the prompt.`
-      : p !== undefined && p >= cfg.compact_soft && cfg.compact_mode === 'smart' ? 'Coach will compact at the next clean break.'
-      : p !== undefined && p >= cfg.compact_at && cfg.compact_mode === 'auto' ? 'Coach compacts at the end of this turn.'
+      : p !== undefined && p >= cfg.compact_soft && cfg.compact_mode === 'smart' ? 'Cairn will compact at the next clean break.'
+      : p !== undefined && p >= cfg.compact_at && cfg.compact_mode === 'auto' ? 'Cairn compacts at the end of this turn.'
       : s.level === 1 ? 'Hand off at the next stopping point.'
       : usageHigh ? 'Plan usage is high: prefer haiku/sonnet subagents.'
       : 'All good.'
@@ -662,7 +662,7 @@ export const register: Register = on => {
         <Text> </Text>
         <Text bold>Workspace</Text>
         {!w2
-          ? <Text dimColor>Loading (coach.py workspace)…</Text>
+          ? <Text dimColor>Loading (cairn.py workspace)…</Text>
           : w2.repos.map(r => {
             const live = r.sessions.filter(x => x.status === 'busy' || x.status === 'idle' || x.status === 'waiting')
             return (

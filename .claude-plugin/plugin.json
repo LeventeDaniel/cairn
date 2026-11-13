@@ -1,6 +1,6 @@
 {
-  "name": "coach-watcher",
-  "version": "0.5.0",
-  "description": "Context Coach watcher: live context, plan usage and inbox pane, and feeds coach.py exact numbers where no status line runs",
+  "name": "cairn",
+  "version": "0.6.0",
+  "description": "Cairn mod: compacts at clean breaks with your notes, and a pane for context, plan usage and every repo's sessions",
   "types": "./types/index.d.ts"
 }

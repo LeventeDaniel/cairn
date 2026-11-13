@@ -1,11 +1,11 @@
 import { expect, test } from 'claude-code/testing'
 
 const PANE = {
-  plugin: 'coach-watcher',
+  plugin: 'cairn',
   component: 'Pane',
-  requestId: 'coach-watcher',
+  requestId: 'cairn',
   props: {
-    title: 'Context Coach',
+    title: 'Cairn',
     isFocused: false,
     bodyColumns: 80,
     placement: 'dock',
@@ -18,7 +18,7 @@ const WS = {
   at: 1, cacheTtlMin: 60,
   repos: [
     { name: 'example-a', path: 'C:/r/a', purpose: 'kit', goal: 'Ship the workspace view', next: '', notes: 1, worktrees: 0,
-      sessions: [{ id: 'a', title: 'coach: workspace', status: 'busy', ageMin: 0, tokens: 120000, warm: true }] },
+      sessions: [{ id: 'a', title: 'cairn: workspace', status: 'busy', ageMin: 0, tokens: 120000, warm: true }] },
     { name: 'example-b', path: 'C:/r/b', purpose: 'worker', goal: '', next: '', notes: 0, worktrees: 2,
       sessions: [{ id: 'b', title: 'fix login page', status: 'closed', ageMin: 300, tokens: 90000, warm: false }] },
   ],
@@ -27,7 +27,7 @@ const WS = {
 
 function engine(on: any, settings: Record<string, unknown>, long = { n: 0 }) {
   const runs: string[][] = []
-  on('command.register', () => ({ value: { command: 'coach' } }))
+  on('command.register', () => ({ value: { command: 'cairn' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 's1' }))
@@ -53,24 +53,24 @@ function engine(on: any, settings: Record<string, unknown>, long = { n: 0 }) {
 const settle = async () => { for (let i = 0; i < 300; i++) await Promise.resolve() }
 
 const HOOKS = {
-  UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'C:/Py/python.exe C:/Users/me/.claude/coach/coach.py prompt' }] }],
+  UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'C:/Py/python.exe C:/Users/me/.claude/cairn/cairn.py prompt' }] }],
 }
 
-test('the pane shows every repo from coach.py workspace, run with the hook\'s own python', async ($, on) => {
+test('the pane shows every repo from cairn.py workspace, run with the hook\'s own python', async ($, on) => {
   const runs = engine(on, { hooks: HOOKS })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await settle()
-  expect(runs[0]).toEqual(['C:/Py/python.exe', 'C:/Users/me/.claude/coach/coach.py', 'workspace', '--json'])
+  expect(runs[0]).toEqual(['C:/Py/python.exe', 'C:/Users/me/.claude/cairn/cairn.py', 'workspace', '--json'])
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' } as any)
   expect((await ui.find({ type: 'Text', text: /example-a/ }))?.text).toContain('1 note(s) waiting')
   expect((await ui.find({ type: 'Text', text: /Ship the workspace/ }))).toBeTruthy()
-  expect((await ui.find({ type: 'Text', text: /coach: workspace/ }))?.text).toContain('cache warm')
+  expect((await ui.find({ type: 'Text', text: /cairn: workspace/ }))?.text).toContain('cache warm')
   expect((await ui.find({ type: 'Text', text: /example-b/ }))?.text).toContain('2 worktree(s)')
   expect((await ui.find({ type: 'Text', text: /no live session/ }))?.text).toContain('5 h ago')
   await ui.unmount()
 })
 
-test('without a Context Coach hook the workspace stays empty and nothing runs', async ($, on) => {
+test('without a Cairn hook the workspace stays empty and nothing runs', async ($, on) => {
   const runs = engine(on, { hooks: {} })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await settle()

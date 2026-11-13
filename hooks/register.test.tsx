@@ -1,11 +1,11 @@
 import { expect, test } from 'claude-code/testing'
 
 const PANE = {
-  plugin: 'coach-watcher',
+  plugin: 'cairn',
   component: 'Pane',
-  requestId: 'coach-watcher',
+  requestId: 'cairn',
   props: {
-    title: 'Context Coach',
+    title: 'Cairn',
     isFocused: false,
     bodyColumns: 50,
     placement: 'dock',
@@ -14,10 +14,10 @@ const PANE = {
   },
 } as const
 
-test('a measure past warn draws the pane, toasts and feeds coach.py state', async ($, on) => {
+test('a measure past warn draws the pane, toasts and feeds cairn.py state', async ($, on) => {
   const writes: { path: string; text: string }[] = []
   const toasts: string[] = []
-  on('command.register', () => ({ value: { command: 'coach' } }))
+  on('command.register', () => ({ value: { command: 'cairn' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 'abc-123:x' }))
@@ -50,9 +50,9 @@ test('a measure past warn draws the pane, toasts and feeds coach.py state', asyn
 
   expect(toasts.some(t => t.includes('55%'))).toBe(false) // smart mode speaks through its decisions
   const fwd = writes.map(w => ({ ...w, path: w.path.split(String.fromCharCode(92)).join('/') }))
-  const state = fwd.filter(w => w.path.endsWith('/coach/state/abc-123x.json')).at(-1)
+  const state = fwd.filter(w => w.path.endsWith('/cairn/state/abc-123x.json')).at(-1)
   expect(state).toBeTruthy()
   expect(JSON.parse(state!.text).pct).toBe(55)
   expect(JSON.parse(state!.text).five_hour).toBe(12)
-  expect(fwd.some(w => w.path.endsWith('/coach/state/last.json'))).toBe(true)
+  expect(fwd.some(w => w.path.endsWith('/cairn/state/last.json'))).toBe(true)
 })

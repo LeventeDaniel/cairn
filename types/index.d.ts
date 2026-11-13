@@ -34,13 +34,13 @@ export type Compaction = {
   tokensAfter?: number
   trimmedCount: number
   trimmedChars: number
-  /** ok: summary kept the edited files; patched: Coach added them; n/a: nothing to check */
+  /** ok: summary kept the edited files; patched: Cairn added them; n/a: nothing to check */
   check: 'ok' | 'patched' | 'n/a'
   /** trimming was refused by the engine and the untrimmed transcript was used */
   fellBack: boolean
 }
 
-/** A compaction Coach is offering in the band above the prompt. */
+/** A compaction Cairn is offering in the band above the prompt. */
 export type Offer = {
   /** context % when offered */
   percent: number
@@ -52,7 +52,7 @@ export type Offer = {
   cold?: boolean
 }
 
-/** One session of a repo, as `coach.py workspace` reads it. */
+/** One session of a repo, as `cairn.py workspace` reads it. */
 export type WsSession = {
   id: string
   title: string
@@ -78,7 +78,7 @@ export type Workspace = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'coach-watcher': {
+    'cairn': {
       snap: Shaped<Snap>
       work: Shaped<Work>
       comps: Shaped<Compaction[]>

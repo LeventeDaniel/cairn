@@ -1,11 +1,11 @@
 import { expect, test } from 'claude-code/testing'
 
 const PANE = {
-  plugin: 'coach-watcher',
+  plugin: 'cairn',
   component: 'Pane',
-  requestId: 'coach-watcher',
+  requestId: 'cairn',
   props: {
-    title: 'Context Coach', isFocused: false, bodyColumns: 60, placement: 'dock',
+    title: 'Cairn', isFocused: false, bodyColumns: 60, placement: 'dock',
     scroll: { offset: 0, bodyRows: 40 }, view: {},
   },
 } as const
@@ -13,13 +13,13 @@ const PANE = {
 const BIG = 'x'.repeat(20000)
 
 function engine(on: any, seen: { compact?: any }, opts: { summary: string; refuseTrim?: boolean }) {
-  on('command.register', () => ({ value: { command: 'coach' } }))
+  on('command.register', () => ({ value: { command: 'cairn' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 's1' }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1000000 }, rateLimits: [] } }))
   on('fs.read', (_: any, e: any) => {
-    if (String(e.path).endsWith('SESSION.md')) return { value: '## Goal\nShip the coach watcher\n## Next\n1. test it\n' }
+    if (String(e.path).endsWith('SESSION.md')) return { value: '## Goal\nShip the watcher\n## Next\n1. test it\n' }
     return { value: '{}' }
   })
   on('fs.list', () => ({ value: [] }))
@@ -45,7 +45,7 @@ const TRANSCRIPT = [
   { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't1', text: BIG, isError: false }], handle: 'h3' },
 ]
 
-test('compaction gets Coach notes, trimmed results, and a patched summary', async ($, on) => {
+test('compaction gets Cairn notes, trimmed results, and a patched summary', async ($, on) => {
   const seen: { compact?: any } = {}
   engine(on, seen, { summary: 'We worked on things.' })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
@@ -56,17 +56,17 @@ test('compaction gets Coach notes, trimmed results, and a patched summary', asyn
 
   const sent = seen.compact
   expect(sent.instructions).toContain('focus on the mod')
-  expect(sent.instructions).toContain('Ship the coach watcher')
+  expect(sent.instructions).toContain('Ship the watcher')
   expect(sent.instructions).toContain('register.tsx')
   expect(sent.instructions).toContain('npm test')
   expect(sent.instructions).toContain('Make compaction smarter')
   const trimmed = sent.messages[2].toolResults[0].text
   expect(trimmed.length < 2000).toBe(true)
-  expect(trimmed).toContain('Context Coach trimmed')
+  expect(trimmed).toContain('Cairn trimmed')
   expect(trimmed).toContain('C:/big.log')
   expect(sent.messages[0].handle).toBe('h1')
 
-  // The summary forgot register.tsx, so Coach patched the state into it.
+  // The summary forgot register.tsx, so Cairn patched the state into it.
   expect(res.messages[0].text).toContain('State carried across this compaction')
   expect(res.messages[0].text).toContain('register.tsx')
 
@@ -102,11 +102,11 @@ test('if the engine refuses the trimmed transcript, it compacts untrimmed', asyn
   expect(seen.compact.messages.every((m: any) => m.handle)).toBe(true)
 })
 
-test('/coach compact queues the compaction and retries if a turn still holds it', async ($, on) => {
+test('/cairn compact queues the compaction and retries if a turn still holds it', async ($, on) => {
   const seen: { compact?: any } = {}
   let attempts = 0
   const toasts: string[] = []
-  on('command.register', () => ({ value: { command: 'coach' } }))
+  on('command.register', () => ({ value: { command: 'cairn' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 's1' }))
@@ -120,7 +120,7 @@ test('/coach compact queues the compaction and retries if a turn still holds it'
   on('clock.now', () => ({ value: 1000 }))
   on('clock.after', () => ({ value: undefined }))  // the timer fires at once
   // The engine's /compact: refused once (a turn still held), then accepted. That
-  // compaction reaching coach-watcher's own hook is what the tests above cover.
+  // compaction reaching cairn's own hook is what the tests above cover.
   on('command.run', async ($: any, e: any) => {
     if (e.command !== 'compact') return { text: 'engine' }
     attempts++
@@ -134,10 +134,10 @@ test('/coach compact queues the compaction and retries if a turn still holds it'
   })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
 
-  const out: any = await $.command.run({ command: 'coach', args: 'compact' } as any)
+  const out: any = await $.command.run({ command: 'cairn', args: 'compact' } as any)
   expect(out.text).toContain('queued')
   for (let i = 0; i < 500 && !toasts.some(t => t.includes('Compacted')); i++) await Promise.resolve()
   expect(attempts).toBe(2)
   expect(seen.compact.command).toBe('compact')
-  expect(toasts.some(t => t.includes("Compacted with Coach's notes"))).toBe(true)
+  expect(toasts.some(t => t.includes("Compacted with Cairn's notes"))).toBe(true)
 })
