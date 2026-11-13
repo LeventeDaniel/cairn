@@ -33,6 +33,8 @@ const WS = {
   ],
 }
 
+const afters: number[] = []
+
 function engine(on: any, settings: Record<string, unknown>, long = { n: 0 }) {
   const runs: string[][] = []
   on('command.register', () => ({ value: { command: 'cairn' } }))
@@ -54,7 +56,7 @@ function engine(on: any, settings: Record<string, unknown>, long = { n: 0 }) {
   on('turn.start', (_: any, e: any) => ({ turnId: e.turnId }))
   on('turn.complete', (_: any, e: any) => ({ text: e.answer }))
   on('session.measure', (_: any, e: any) => ({ changed: e.changed }))
-  on('clock.after', (_: any, e: any) => { if (e.ms >= 30 * 60000) long.n++; return { value: undefined } })
+  on('clock.after', (_: any, e: any) => { afters.push(e.ms); if (e.ms >= 30 * 60000) long.n++; return { value: undefined } })
   return runs
 }
 
@@ -117,4 +119,12 @@ test("the pane shows Cairn Home's board: waiting, running and recent done rows",
   expect((await ui.find({ type: 'Text', text: /t2 example-b: fix export/ }))?.text).toContain('needs your review')
   expect((await ui.find({ type: 'Text', text: /t1 example-a: old task/ }))?.text).toContain('done')
   await ui.unmount()
+})
+
+test('an idle session re-reads the workspace every 2 minutes so the board does not go stale', async ($, on) => {
+  afters.length = 0
+  engine(on, { hooks: HOOKS })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await settle()
+  expect(afters).toContain(120000)
 })

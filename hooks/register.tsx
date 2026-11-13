@@ -117,6 +117,7 @@ async function refreshWorkspace($: EngineInterface, force = false) {
   const now = await $.clock.now()
   if (wsBusy || (!force && now - wsAt < 60000)) return
   wsBusy = true
+  let changed = false
   wsAt = now
   try {
     const cmd = await cairnCommand($)
@@ -124,12 +125,32 @@ async function refreshWorkspace($: EngineInterface, force = false) {
     const r = await $.process.run([...cmd, 'workspace', '--json'], { timeoutMs: 45000 })
     if (r.exitCode !== 0) throw new Error(r.stderr.slice(0, 300))
     const w = JSON.parse(r.stdout) as Workspace
+    const key = JSON.stringify({ ...w, at: 0 })
+    changed = key !== wsKey
+    wsKey = key
     await update($, ws, () => w)
   } catch (err) {
     $.ui.log(`cairn: workspace refresh failed: ${String(err)}`)
   } finally {
     wsBusy = false
+    if (changed || !timerFired) armWorkspaceTimer($)
+    timerFired = false
   }
+}
+
+// An idle session gets no turn-end refresh, so the pane would go stale: re-read after 2 minutes, and keep
+// going only while the board keeps changing (an unchanged re-read ends the chain).
+let wsTimer = false
+let wsKey = ''
+let timerFired = false
+function armWorkspaceTimer($: EngineInterface) {
+  if (wsTimer) return
+  wsTimer = true
+  $.clock.after(120000, () => {
+    wsTimer = false
+    timerFired = true
+    void refreshWorkspace($, true)
+  })
 }
 
 async function inbox($: EngineInterface, home: string): Promise<string[]> {
