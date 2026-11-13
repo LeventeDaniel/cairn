@@ -44,11 +44,11 @@ test('a measure past warn draws the pane, toasts and feeds coach.py state', asyn
     expect((await ui.find({ type: 'Text', text: /55%/ }))?.text).toContain('55%')
     expect((await ui.find({ type: 'Text', text: /5h 12%/ }))?.text).toContain('7d 40%')
     expect((await ui.find({ type: 'Text', text: /billing/ }))?.text).toContain('billing')
-    expect((await ui.find({ type: 'Text', text: /Hand off/ }))).toBeTruthy()
+    expect((await ui.find({ type: 'Text', text: /next clean break/ }))).toBeTruthy()
     await ui.unmount()
   }
 
-  expect(toasts.some(t => t.includes('55%'))).toBe(true)
+  expect(toasts.some(t => t.includes('55%'))).toBe(false) // smart mode speaks through its decisions
   const fwd = writes.map(w => ({ ...w, path: w.path.split(String.fromCharCode(92)).join('/') }))
   const state = fwd.filter(w => w.path.endsWith('/coach/state/abc-123x.json')).at(-1)
   expect(state).toBeTruthy()

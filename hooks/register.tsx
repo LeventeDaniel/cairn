@@ -1,15 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage, SessionUsage } from 'claude-code'
 
-import type { Compaction, Snap, Work } from '../types'
+import type { Compaction, Offer, Snap, Work } from '../types'
 
 const PANE = 'coach-watcher'
 const TITLE = 'Context Coach'
 // Tunable in ~/.claude/coach/config.json, next to Context Coach's own keys.
 const DEFAULTS = {
   warn: 50, urgent: 70, usage_warn: 80,
-  compact_mode: 'ask' as 'ask' | 'auto' | 'off', // clean-break compaction
-  compact_at: 60,      // % context at which a clean-break compaction is offered/run
+  // smart: Coach decides (clean breaks, idle time, hard limit); ask: offer only;
+  // auto: compact at compact_at whatever the state; off: never
+  compact_mode: 'smart' as 'smart' | 'ask' | 'auto' | 'off',
+  compact_soft: 40,    // % from which a finished task is a reason to compact
+  compact_at: 60,      // % from which any calm turn end is
+  compact_hard: 72,    // % at which Coach compacts at the next turn end, mid-task or not
+  idle_minutes: 3,     // an offer nobody answered runs after this long with no new prompt
   trim_over: 4000,     // tool results longer than this (chars) are trimmed before summarizing
   trim_keep: 800,      // chars kept from a trimmed result (head + tail)
 }
@@ -22,6 +27,8 @@ const work = atom({ plugin: 'coach-watcher', key: 'work' } as const,
   { files: [], fails: [], oks: [] } as Work, { shape: 'work-1' })
 const comps = atom({ plugin: 'coach-watcher', key: 'comps' } as const,
   [] as Compaction[], { shape: 'comps-1' })
+const offer = atom({ plugin: 'coach-watcher', key: 'offer' } as const,
+  null as Offer | null, { shape: 'offer-1' })
 
 /** ~/.claude, taken from where the mod lives (…/.claude/dev-mods/… or …/.claude/plugins/…). */
 function claudeDir(root: string): string {
@@ -41,8 +48,11 @@ const baseName = (p: string) => p.replace(/\\/g, '/').split('/').pop() || p
 
 let lastLevel = 0
 let cfg: Cfg = { ...DEFAULTS }
-let offeredAt = 0      // compact_at crossing already offered/handled
 let compacting = false
+// This main-loop turn's signs that a piece of work just finished.
+let turnDone = ''      // what finished, '' if nothing
+let turnSeq = 0        // main-loop turns started; an idle timer checks nothing new began
+let snoozedTo = 0      // "Not now": no new offer below this %
 
 async function loadCfg($: EngineInterface, home: string) {
   try {
@@ -70,6 +80,11 @@ async function record($: EngineInterface, tool: string, input: Record<string, un
   const file = (input.file_path ?? input.notebook_path) as string | undefined
   const cmd = typeof input.command === 'string' ? oneLine(input.command, 160) : undefined
   const now = $.clock.now()
+  if (!ran.isError) {
+    if (/(^|__)wrap_up$/.test(tool)) turnDone ||= 'task wrapped up'
+    else if (cmd && /\bgit\s+(commit|push)\b/.test(cmd)) turnDone = /push/.test(cmd) ? 'work pushed' : 'work committed'
+    else if (cmd && (await read($, work)).fails.some(f => f.cmd === cmd)) turnDone ||= 'failing command passes now'
+  }
   if ((tool === 'Edit' || tool === 'Write' || tool === 'NotebookEdit' || tool === 'MultiEdit') && file && !ran.isError) {
     await update($, work, w => ({ ...w, files: [...w.files.filter(f => f !== file), file].slice(-40) }))
   } else if ((tool === 'Bash' || tool === 'PowerShell') && cmd) {
@@ -202,7 +217,8 @@ async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'ra
   if (sd !== undefined) parts.push(`7d ${sd.toFixed(0)}%`)
   $.ui.status(parts.length ? 'Coach · ' + parts.join(' · ') : undefined)
 
-  if (level > lastLevel) {
+  // With compaction on, Coach's own decisions speak for it (decide(), the band).
+  if (level > lastLevel && cfg.compact_mode === 'off') {
     $.ui.toast(level === 2
       ? `Context ${p!.toFixed(0)}% full: save with handoff, then /clear`
       : `Context ${p!.toFixed(0)}% full: plan a handoff at the next stopping point`)
@@ -224,18 +240,73 @@ async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'ra
   return p
 }
 
-// ------------------------------------------------------------ clean break (5)
-async function cleanBreak($: EngineInterface, p: number | undefined) {
-  if (p === undefined) return
-  if (p < cfg.compact_at) { offeredAt = 0; return }
-  if (offeredAt || compacting || cfg.compact_mode === 'off') return
-  offeredAt = p
-  if (cfg.compact_mode === 'auto') {
-    $.ui.toast(`Context ${p.toFixed(0)}%: compacting with Coach's notes once this turn ends`)
-    queueCompact($)
-  } else {
-    $.ui.toast(`Context ${p.toFixed(0)}%: type /coach compact to compact now with Coach's notes`)
+// ------------------------------------------------------------ when to compact (5)
+/**
+ * Called at each main-loop turn end. Picks one of: compact now, offer (band
+ * above the prompt, and compact if the person stays away idle_minutes), or wait.
+ *
+ * - at compact_hard: now, so the engine's own auto-compact never cuts in mid-task
+ * - an open failure below compact_hard: wait, the debugging context is still needed
+ * - from compact_at: a finished piece of work → now; any other calm end → offer
+ * - from compact_soft: a finished piece of work → offer
+ */
+function verdict(p: number, mode: Cfg['compact_mode'], c: Cfg, done: string, openFails: number,
+  snoozed: number): { act: 'now' | 'offer' | 'wait'; reason: string } {
+  const wait = { act: 'wait' as const, reason: '' }
+  if (mode === 'off' || p < c.compact_soft) return wait
+  if (mode === 'auto') return p >= c.compact_at ? { act: 'now', reason: `context past ${c.compact_at}%` } : wait
+  if (p >= c.compact_hard) {
+    return mode === 'ask' ? { act: 'offer', reason: `context ${p.toFixed(0)}%, near the limit` }
+      : { act: 'now', reason: `context ${p.toFixed(0)}%, before auto-compact cuts in mid-task` }
   }
+  if (openFails > 0 || p < snoozed) return wait
+  if (p >= c.compact_at) {
+    if (done && mode === 'smart') return { act: 'now', reason: `${done}, context ${p.toFixed(0)}%` }
+    return { act: 'offer', reason: done ? `${done}, context ${p.toFixed(0)}%` : `context ${p.toFixed(0)}%, a calm point` }
+  }
+  return done ? { act: 'offer', reason: `${done}, context ${p.toFixed(0)}%` } : wait
+}
+
+async function decide($: EngineInterface) {
+  const done = turnDone
+  turnDone = ''
+  if (pending || compacting) return
+  const p = (await read($, snap)).percent
+  if (p === undefined) return
+  const w = await read($, work)
+  const v = verdict(p, cfg.compact_mode, cfg, done, w.fails.length, snoozedTo)
+  if (v.act === 'wait') return
+  if (v.act === 'now') {
+    await update($, offer, () => null)
+    $.ui.toast(`Coach is compacting: ${v.reason}`)
+    queueCompact($)
+    return
+  }
+  await update($, offer, () => ({ percent: p, reason: v.reason, at: $.clock.now() }))
+  if (cfg.compact_mode === 'smart') {
+    // Nobody answers and no turn starts: compact while the person is away.
+    const seq = turnSeq
+    $.clock.after(cfg.idle_minutes * 60000, () => { void idleCompact($, seq) })
+  }
+}
+
+async function idleCompact($: EngineInterface, seq: number) {
+  if (seq !== turnSeq || pending || compacting || !(await read($, offer))) return
+  await update($, offer, () => null)
+  $.ui.toast("Coach compacted while you were away: see the Context Coach pane")
+  queueCompact($)
+}
+
+async function snooze($: EngineInterface) {
+  const o = await read($, offer)
+  snoozedTo = (o?.percent ?? 0) + 10
+  await update($, offer, () => null)
+}
+
+async function acceptOffer($: EngineInterface) {
+  await update($, offer, () => null)
+  tries = 0
+  queueCompact($)
 }
 
 // The engine refuses a compaction under a turn a hook is holding (a command,
@@ -293,15 +364,28 @@ export const register: Register = on => {
   })
 
   on('session.measure', async ($, e, next) => {
-    const p = await refresh($, e)
-    await cleanBreak($, p)
+    await refresh($, e)
     return next(e)
   })
 
-  // A queued compaction that met a running turn tries again when the turn ends.
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) { turnSeq++; turnDone = '' }
+    return next(e)
+  })
+
+  // Each main-loop turn end is where Coach decides; a queued compaction that
+  // met a running turn tries again here too.
   on('turn.complete', async ($, e, next) => {
     const ran = await next(e)
-    if (pending && e.agentId === undefined) queueCompact($)
+    if (e.agentId !== undefined) return ran
+    if (pending) queueCompact($)
+    else if (e.reason === 'answer') {
+      try {
+        await decide($)
+      } catch (err) {
+        $.ui.log(`coach-watcher: compaction decision failed: ${String(err)}`)
+      }
+    }
     return ran
   })
 
@@ -353,20 +437,35 @@ export const register: Register = on => {
       trimmedCount: fellBack ? 0 : trimmed.count, trimmedChars: fellBack ? 0 : trimmed.chars,
       check, fellBack,
     }].slice(-10))
-    if (!isSubagent) offeredAt = 0
+    if (!isSubagent) { snoozedTo = 0; await update($, offer, () => null) }
     return messages === res.messages ? res : { ...res, messages }
   }).catch(($, e, next) => next(e)) // on any failure, the engine's own compaction stands
 
   on('command.run', { command: 'coach' }, async ($, e) => {
     if (e.args.trim() === 'compact') {
       if (pending || compacting) return { text: 'A Coach compaction is already queued.' }
-      tries = 0
-      queueCompact($)
+      await acceptOffer($)
       return { text: "Compaction queued: it runs with Coach's notes as soon as this command finishes." }
     }
     await refresh($, await $.session.usage())
     const opened = await $.ui.open({ id: PANE, title: TITLE })
     return { text: opened.isPlaced ? 'Context Coach pane opened.' : `Context Coach pane is waiting: ${opened.reason}` }
+  })
+
+  // ---------------------------------------------------------- band (5)
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const o = await read($, offer)
+    if (!o || e.props.hasSurvey || e.props.isWorking || pending || compacting) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const idle = cfg.compact_mode === 'smart' ? ` · runs by itself in ${cfg.idle_minutes} min if you're away` : ''
+    return (
+      <Box>
+        <Text>Coach: good moment to compact ({o.reason}){idle} </Text>
+        <Button key="now" label="Compact now" onPress={() => acceptOffer($)} />
+        <Text> </Text>
+        <Button key="later" label="Not now" onPress={() => snooze($)} />
+      </Box>
+    )
   })
 
   // ---------------------------------------------------------- pane (7)
@@ -375,6 +474,7 @@ export const register: Register = on => {
     const s = await read($, snap)
     const w = await read($, work)
     const cs = await read($, comps)
+    const o = await read($, offer)
     const p = s.percent
     const color = s.level === 2 ? 'red' : s.level === 1 ? 'yellow' : 'green'
     const width = 20
@@ -382,8 +482,10 @@ export const register: Register = on => {
     const fh = pct(s.limits, 'five_hour'), sd = pct(s.limits, 'seven_day')
     const usageHigh = (fh ?? 0) >= cfg.usage_warn || (sd ?? 0) >= cfg.usage_warn
     const advice =
-      s.level === 2 ? 'Run handoff now, then type /clear.'
-      : p !== undefined && p >= cfg.compact_at && cfg.compact_mode !== 'off' ? 'Type /coach compact at a clean break.'
+      s.level === 2 && cfg.compact_mode === 'off' ? 'Run handoff now, then type /clear.'
+      : o ? `Good moment to compact (${o.reason}): use the band above the prompt.`
+      : p !== undefined && p >= cfg.compact_soft && cfg.compact_mode === 'smart' ? 'Coach will compact at the next clean break.'
+      : p !== undefined && p >= cfg.compact_at && cfg.compact_mode === 'auto' ? 'Coach compacts at the end of this turn.'
       : s.level === 1 ? 'Hand off at the next stopping point.'
       : usageHigh ? 'Plan usage is high: prefer haiku/sonnet subagents.'
       : 'All good.'
@@ -396,7 +498,7 @@ export const register: Register = on => {
           ? <Text dimColor>No reading yet (fills in after the first reply).</Text>
           : <Text color={color}>{'█'.repeat(filled)}{'░'.repeat(width - filled)} {p.toFixed(0)}%</Text>}
         {s.tokens !== undefined && s.window > 0 &&
-          <Text dimColor>{k(s.tokens)} of {k(s.window)} tokens · warn {cfg.warn}% · compact {cfg.compact_at}% ({cfg.compact_mode}) · urgent {cfg.urgent}%</Text>}
+          <Text dimColor>{k(s.tokens)} of {k(s.window)} tokens · compact {cfg.compact_mode}: done-task {cfg.compact_soft}% · calm {cfg.compact_at}% · hard {cfg.compact_hard}%</Text>}
         <Text> </Text>
         <Text bold>Plan usage</Text>
         {fh === undefined && sd === undefined

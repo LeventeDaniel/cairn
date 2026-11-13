@@ -40,12 +40,23 @@ export type Compaction = {
   fellBack: boolean
 }
 
+/** A compaction Coach is offering in the band above the prompt. */
+export type Offer = {
+  /** context % when offered */
+  percent: number
+  /** why now, in a few words */
+  reason: string
+  /** clock time of the offer */
+  at: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'coach-watcher': {
       snap: Shaped<Snap>
       work: Shaped<Work>
       comps: Shaped<Compaction[]>
+      offer: Shaped<Offer | null>
     }
   }
 }

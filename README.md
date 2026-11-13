@@ -9,7 +9,14 @@ Companion mod for Context Coach. It shows a live **Context Coach** pane (context
 - **Trims bulky tool results** (whole-file reads, long logs, search dumps) to a head and tail before summarizing. If the engine refuses the trimmed copy, it compacts the untrimmed transcript instead.
 - **Checks the summary**: if it dropped the recently edited files, Coach appends its state block to the summary.
 - **Subagent compactions** keep only the task, findings with file:line, and conclusions.
-- **Clean-break compaction**: once context passes `compact_at`, it offers (`ask`) or runs (`auto`) a guided compaction between turns.
+- **Decides when to compact** (`smart`, the default). At the end of each turn it looks at how full the context is and what just happened:
+  - a finished piece of work (the task wrapped up, a commit or push, a failing command passing again) from `compact_soft` → it offers in a band above the prompt
+  - the same from `compact_at` → it compacts right away
+  - any other calm turn end from `compact_at` → it offers
+  - an open failure (you are mid-debug) → it waits, until `compact_hard`
+  - at `compact_hard` → it compacts at the turn end, so the engine's own auto-compact never cuts in mid-task
+  - an offer nobody answers runs by itself after `idle_minutes` with no new prompt, while you are away
+  The band has **Compact now** and **Not now** (quiet until context grows 10 more points).
 - **Feeds coach.py** exact numbers in `~/.claude/coach/state/<session>.json`, because the Code tab runs no status line.
 
 ## Commands
@@ -23,8 +30,11 @@ These go in `~/.claude/coach/config.json`, next to Context Coach's own keys:
 
 | key | default | meaning |
 |---|---|---|
-| `compact_mode` | `ask` | `ask`, `auto` or `off`, for the clean-break compaction |
-| `compact_at` | `60` | % of context at which it is offered or run |
+| `compact_mode` | `smart` | `smart` (Coach decides), `ask` (offers only), `auto` (compacts at `compact_at` whatever the state) or `off` |
+| `compact_soft` | `40` | % from which a finished piece of work is a reason to compact |
+| `compact_at` | `60` | % from which any calm turn end is |
+| `compact_hard` | `72` | % at which it compacts at the next turn end, mid-task or not |
+| `idle_minutes` | `3` | an unanswered offer runs after this many minutes with no new prompt |
 | `trim_over` | `4000` | tool results longer than this many characters get trimmed (errors: 4×) |
 | `trim_keep` | `800` | characters kept from a trimmed result |
 | `warn` / `urgent` / `usage_warn` | `50` / `70` / `80` | shared with Context Coach |
