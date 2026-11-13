@@ -3,7 +3,7 @@ import type { EngineInterface, Register, SessionMessage, SessionUsage } from 'cl
 
 import type { Compaction, Offer, Snap, Work } from '../types'
 
-const VERSION = '0.3.0'
+const VERSION = '0.3.1'
 const PANE = 'coach-watcher'
 const TITLE = 'Context Coach'
 // Tunable in ~/.claude/coach/config.json, next to Context Coach's own keys.
@@ -249,6 +249,7 @@ async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'ra
  *
  * - at compact_hard: now, so the engine's own auto-compact never cuts in mid-task
  * - an open failure below compact_hard: wait, the debugging context is still needed
+ *   (finished work clears open failures first, see decide())
  * - from compact_at: a finished piece of work → now; any other calm end → offer
  * - from compact_soft: a finished piece of work → offer
  */
@@ -275,6 +276,9 @@ async function decide($: EngineInterface) {
   if (pending || compacting) return
   const p = (await read($, snap)).percent
   if (p === undefined) return
+  // Finished work closes the failures left from earlier: a command that failed
+  // once (a stray ls, a probe) must not hold back every later offer.
+  if (done) await update($, work, x => ({ ...x, fails: [] }))
   const w = await read($, work)
   const v = verdict(p, cfg.compact_mode, cfg, done, w.fails.length, snoozedTo)
   try {
