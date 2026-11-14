@@ -12,7 +12,7 @@ const BAND = {
 type Seen = { compacts: number; toasts: string[]; release: () => void; releaseCache: () => void; stored: Record<string, unknown> }
 
 /** An engine at `percent` context; long timers (the idle one) wait for `seen.release()`. */
-function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; cwd?: string; failCompact?: boolean } = {}): Seen {
+function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; cwd?: string; failCompact?: boolean; board?: unknown } = {}): Seen {
   const seen: Seen = { compacts: 0, toasts: [], release: () => {}, releaseCache: () => {}, stored: {} }
   const gate = new Promise<void>(r => { seen.release = r })
   const cacheGate = new Promise<void>(r => { seen.releaseCache = r })
@@ -26,7 +26,7 @@ function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; c
   on('session.cwd', () => ({ value: opt.cwd ?? 'C:/r/example-a' }))
   on('session.usage', () => ({ value: {
     startedAt: 0, context: { tokens: percent * 10000, window: 1000000, percent }, rateLimits: [] } }))
-  on('fs.read', () => ({ value: '{}' }))
+  on('fs.read', (_: any, e: any) => ({ value: opt.board && String(e.path).endsWith('board.json') ? JSON.stringify(opt.board) : '{}' }))
   on('fs.list', () => ({ value: [] }))
   on('fs.write', () => ({ value: undefined }))
   on('ui.toast', (_: any, e: any) => { seen.toasts.push(e.text); return { value: undefined } })
@@ -173,7 +173,7 @@ test('an idle context big enough to matter is compacted before the prompt cache 
   await settle()
   expect(seen.compacts).toBe(0)
   seen.releaseCache()           // 55 minutes with no new turn
-  await settle()
+  await settle(); await settle() // the guard reads the board first: a few more hops
   expect(seen.compacts).toBe(1)
   expect(seen.toasts.some(t => t.includes('before the prompt cache expired'))).toBe(true)
 })
@@ -276,4 +276,40 @@ test('in a repo, a wrapped-up turn at 20% stays below compact_soft', async ($, o
   expect((await ui.find({ type: 'Text', text: /good moment to compact/ }))).toBeFalsy()
   expect(seen.compacts).toBe(0)
   await ui.unmount()
+})
+
+// A worker whose board task is finished gets no more messages: compacting it while idle only spends plan usage.
+const DONE_BOARD = { tasks: [{ id: 't1', cliSession: 's1', status: 'done' }] }
+
+test('a finished worker is not compacted while it sits idle, the offer stays', async ($, on) => {
+  const seen = engine(on, 62, { board: DONE_BOARD })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'Read', file_path: 'C:/a.ts' } as any))
+  await settle()
+  seen.release(); seen.releaseCache()   // the idle minutes and the cache guard both pass
+  for (let i = 0; i < 5; i++) await settle()
+  expect(seen.compacts).toBe(0)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect(await ui.find({ type: 'Text', text: /good moment to compact/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a finished worker reopened after the cache expired is offered a compaction, not given one', async ($, on) => {
+  const seen = engine(on, 20, { now: 3 * 3600000, ends: { s1: { at: 0, tokens: 200000 } }, board: DONE_BOARD })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (let i = 0; i < 5; i++) await settle()
+  expect(seen.compacts).toBe(0)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect(await ui.find({ type: 'Text', text: /compact before you continue/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a worker whose task is still open is compacted as before', async ($, on) => {
+  const seen = engine(on, 62, { board: { tasks: [{ id: 't1', cliSession: 's1', status: 'waiting' }, { id: 't0', cliSession: 'other', status: 'done' }] } })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'Read', file_path: 'C:/a.ts' } as any))
+  await settle()
+  seen.release()
+  await settle()
+  expect(seen.compacts).toBe(1)
 })

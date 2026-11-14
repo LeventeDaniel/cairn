@@ -295,6 +295,8 @@ def cmd_prompt():
         fh = None
     if st.get("seven_day_resets") and now > st["seven_day_resets"]:
         sd = None
+    if now - (st.get("t") or now) > 5 * 3600:
+        fh = None  # no reset time saved (the mod's state has none): a reading older than the window is void
     if (fh or 0) >= c["usage_warn"] or (sd or 0) >= c["usage_warn"]:
         notes.append(f"Plan usage is high (5h {fh or 0:.0f}%, 7d {sd or 0:.0f}%). Prefer haiku/sonnet "
                      "subagents and low effort; suggest a smaller main model with /model in one line.")

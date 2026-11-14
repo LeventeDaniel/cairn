@@ -164,6 +164,9 @@ class Hooks(unittest.TestCase):
         st.write_text(json.dumps({**base, "five_hour_resets": time.time() + 600}))
         (self.m.CAIRN / "nag" / "u1.json").unlink()
         self.assertIn("Plan usage is high", self.prompt("u1", self.repo, "carry on"))
+        st.write_text(json.dumps({**base, "t": time.time() - 6 * 3600}))  # the mod's state: no reset time, hours old
+        (self.m.CAIRN / "nag" / "u1.json").unlink()
+        self.assertNotIn("Plan usage", self.prompt("u1", self.repo, "carry on"))
 
     def test_non_worker_low_context_says_nothing_about_home(self):
         out = self.prompt("other", self.repo, "also please redesign the marketing website header banner colours today")

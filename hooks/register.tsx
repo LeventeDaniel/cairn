@@ -7,7 +7,7 @@ import type { LedgerEvent } from './ledger'
 import { advice, health, needsAndRunning } from './panel'
 import type { Item } from './panel'
 
-const VERSION = '0.7.0'
+const VERSION = '0.8.0'
 const PANE = 'cairn'
 const TITLE = 'Cairn'
 // Tunable in ~/.claude/cairn/config.json, next to Cairn's own keys.
@@ -489,8 +489,26 @@ async function decide($: EngineInterface) {
   }
 }
 
+/**
+ * A worker Cairn Home started whose board task is done or closed. Nobody is going to send it another
+ * message, so compacting it while it sits idle buys nothing and spends plan usage (with many finished
+ * workers open, a compaction each). The offer stays up for the person who does come back to it.
+ */
+async function finishedWorker($: EngineInterface): Promise<boolean> {
+  try {
+    const sid = await $.session.id()
+    const b = JSON.parse(await $.fs.read(`${claudeDir($.plugin.root)}/cairn/board.json`)) as
+      { tasks?: { cliSession?: string; status?: string }[] }
+    const mine = (b.tasks ?? []).filter(t => t.cliSession === sid)
+    return mine.length > 0 && mine.every(t => t.status === 'done' || t.status === 'closed')
+  } catch {
+    return false
+  }
+}
+
 async function idleCompact($: EngineInterface, seq: number) {
   if (seq !== turnSeq || pending || compacting || !(await read($, offer))) return
+  if (await finishedWorker($)) return
   await update($, offer, () => null)
   $.ui.toast("Cairn compacted while you were away: see the Cairn pane")
   queueCompact($)
@@ -517,6 +535,7 @@ async function cacheGuard($: EngineInterface, seq: number, done: number) {
   const { tokens = 0, percent = 0 } = await read($, snap)
   if (percent < snoozedTo) return // "Not now" stands
   if (tokens < cfg.cache_min_tokens) return
+  if (await finishedWorker($)) return
   await update($, offer, () => null)
   await warned($, 'guard', tokens)
   coldRun = true
@@ -563,7 +582,7 @@ async function coldCheck($: EngineInterface) {
   }))
   // Nobody is at the screen to click the band: compact now, before the first reply re-reads it all.
   // If it can't run, the offer stays up as the fallback.
-  if (cfg.compact_mode === 'smart' || cfg.compact_mode === 'auto') {
+  if ((cfg.compact_mode === 'smart' || cfg.compact_mode === 'auto') && !(await finishedWorker($))) {
     $.ui.toast(`Cairn is compacting: away ${away}, the prompt cache expired`)
     tries = 0
     coldRun = true
