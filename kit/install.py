@@ -163,4 +163,11 @@ def uninstall():
 
 
 if __name__ == "__main__":
+    if sys.version_info < (3, 8):
+        sys.exit("Cairn needs Python 3.8 or newer (this is %d.%d)." % sys.version_info[:2])
+    for _s in (sys.stdout, sys.stderr):  # Windows consoles default to cp1252 and garble the dashes
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     uninstall() if "--uninstall" in sys.argv else install()
