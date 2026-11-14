@@ -33,6 +33,10 @@ const title = (t: string) => clip(t, 48)
  */
 export function waitingHint(t: BoardTask, now: number): string {
   if (t.waitingFor) return `Waiting for you: ${t.waitingFor}`
+  if (t.stopped) {
+    return t.stopped === 'rate_limit' ? 'Cut off by the usage limit: tell it to continue after the reset'
+      : `Stopped by an error (${t.stopped}): open it or tell it to continue`
+  }
   if (t.report && !t.reportStale) return clip(t.report, 70)
   if (t.pending && t.turnEnded) return `Quiet for ${Math.round((now - t.turnEnded) / 60)} min with background work pending: check it`
   return t.last ? clip(`Finished its turn: ${t.last}`, 90) : 'Finished its turn: open it and check'

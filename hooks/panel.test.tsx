@@ -53,3 +53,9 @@ test('a worker with a prompt open says so and is listed first', () => {
   expect(r.needs[0]!.hint).toBe('Waiting for you: permission prompt')
   expect(r.needs[1]!.hint).toBe('Finished its turn: All done.')
 })
+
+test('a worker cut off by the usage limit says so instead of looking finished', () => {
+  const base = { id: 't1', repo: 'r', title: 'r: job', kind: 'k', model: 'm', effort: 'e', session: 'local_j', status: 'waiting' as const, started: 0, updated: 0, report: 'still running', reportStale: true, last: 'API Error: Rate limit reached' }
+  expect(waitingHint({ ...base, stopped: 'rate_limit' }, 0)).toBe('Cut off by the usage limit: tell it to continue after the reset')
+  expect(waitingHint({ ...base, stopped: 'overloaded' }, 0)).toBe('Stopped by an error (overloaded): open it or tell it to continue')
+})

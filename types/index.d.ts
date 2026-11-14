@@ -92,6 +92,8 @@ export type BoardTask = {
   reportStale?: boolean
   /** from the worker's own Stop hook: the last line it said, when (epoch s), and background tasks/wakeups it left pending */
   last?: string; turnEnded?: number; pending?: number
+  /** set when an API error ended its last turn (rate_limit = the plan's usage limit); it will not go on by itself */
+  stopped?: string
 }
 
 /** One line of the savings ledger (~/.claude/cairn/state/ledger.json). */

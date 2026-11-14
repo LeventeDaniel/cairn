@@ -323,5 +323,44 @@ class AgentFields(unittest.TestCase):
         self.assertEqual(self.row(status=None, kind="background", state="done")["status"], "closed")
 
 
+class StopFailure(unittest.TestCase):
+    """A turn that ends on an API error (the usage limit) is not a finished turn (hooks docs: StopFailure)."""
+
+    def setUp(self):
+        self.m = load(Path(tempfile.mkdtemp()))
+        run(self.m, "dispatch", "--repo", "a", "--title", "a: job", "--session", "local_j")
+        self.m._AGENTS = [agent("u1", "a: job", "busy")]
+        run(self.m, "board")
+        run(self.m, "stop", stdin={"session_id": "u1", "hook_event_name": "StopFailure", "error": "rate_limit",
+                                   "last_assistant_message": "API Error: Rate limit reached"})
+        self.m._AGENTS = [agent("u1", "a: job", "idle")]
+
+    def test_the_row_says_stopped_until_the_worker_runs_again(self):
+        r = json.loads(run(self.m, "board", "--json"))[0]
+        self.assertEqual((r["status"], r["stopped"]), ("waiting", "rate_limit"))
+        out = run(self.m, "board")
+        self.assertIn("STOPPED", out)
+        self.assertIn("Once the usage limit has reset, tell it to continue", out)
+        self.m._AGENTS = [agent("u1", "a: job", "busy")]
+        self.assertNotIn("stopped", json.loads(run(self.m, "board", "--json"))[0])
+
+    def test_home_is_told_once_and_other_sessions_are_not(self):
+        run(self.m, "board")
+        self.m.HOME_DIR.mkdir(parents=True)
+        ask = lambda sid, cwd: run(self.m, "prompt", stdin={"session_id": sid, "cwd": str(cwd), "prompt": "status?",
+                                                            "transcript_path": ""})
+        first = ask("h1", self.m.HOME_DIR)
+        self.assertIn("1 worker(s) were cut off by the plan's usage limit", first)
+        self.assertIn("t1 'a: job'", first)
+        self.assertNotIn("cut off", ask("h1", self.m.HOME_DIR))   # not on every prompt
+        self.assertNotIn("cut off", ask("w9", self.m.HOME))       # only Home relays it
+
+    def test_a_normal_stop_clears_it(self):
+        run(self.m, "stop", stdin={"session_id": "u1", "hook_event_name": "Stop", "last_assistant_message": "Done."})
+        r = json.loads(run(self.m, "board", "--json"))[0]
+        self.assertNotIn("stopped", r)
+        self.assertEqual(r["last"], "Done.")
+
+
 if __name__ == "__main__":
     unittest.main()

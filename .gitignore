@@ -1,0 +1,5 @@
+# Per-session notes and machine state: never part of the public repo
+SESSION*.md
+# State an older build of the mod wrote into its own folder when loaded in place from this checkout
+/cairn/
+__pycache__/

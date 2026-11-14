@@ -5,7 +5,8 @@ Subcommands (wired up by install.py):
   statusline     status line: shows context %, usage; saves exact numbers for the hooks
   prompt         UserPromptSubmit hook: advises /clear, handoff, subagents, model choice
   session-start  SessionStart hook: restores SESSION.md, delivers inbox notes, keeps repo registry
-  stop           Stop hook: a worker's turn ended; its own last line goes on its board row
+  stop           Stop / StopFailure hook: a worker's turn ended (or an API error such as the usage
+                 limit cut it off); its own last line, or the error, goes on its board row
   audit          prints what loads into every session and how big it is
   spawn          lets Claude start a background/cloud session (or a new repo) on its own
   dispatch       Home: add a task to the board (checks the running cap, fills model/effort defaults)
@@ -289,6 +290,12 @@ def cmd_prompt():
     if tools >= c["tool_results"]:
         notes.append(f"{tools} tool results are in context since the last reset. Send further searching, "
                      "file/log reading or research to the scout or researcher subagent.")
+    cut = stopped_workers() if home else []
+    if cut:
+        notes.append(f"{len(cut)} worker(s) were cut off by the plan's usage limit and are not running: "
+                     + "; ".join(f"{t['id']} '{t['title']}'" for t in cut[:5])
+                     + ". Tell the user in one line. When the limit has reset, send each one 'continue from where you "
+                     "stopped' with SendMessage (a status relay, not an approval).")
     fh, sd = st.get("five_hour"), st.get("seven_day")
     now = time.time()  # a saved percentage from before the window reset says nothing about now
     if st.get("five_hour_resets") and now > st["five_hour_resets"]:
@@ -303,7 +310,7 @@ def cmd_prompt():
 
     # Don't nag: speak when something changes, then every N prompts while it persists.
     nag = read_json(CAIRN / "nag" / f"{sid}.json", {}) or {}
-    key = f"{level}|{tools >= c['tool_results']}|{bool(notes and 'usage' in notes[-1])}|{bool(shift)}"
+    key = f"{level}|{tools >= c['tool_results']}|{bool(notes and 'usage' in notes[-1])}|{bool(shift)}|{','.join(t['id'] for t in cut)}"
     since = nag.get("since", 0) + 1
     speak = notes and (key != nag.get("key") or since >= c["repeat_every"])
     write_json(CAIRN / "nag" / f"{sid}.json", {"key": key, "since": 0 if speak else since})
@@ -787,12 +794,25 @@ def cmd_stop():
     lines = [ln.strip() for ln in (d.get("last_assistant_message") or "").splitlines() if ln.strip()]
     last = re.sub(r"\s+", " ", lines[-1].lstrip("#>-• ").strip("*_` ")) if lines else ""
     pending = len(d.get("background_tasks") or []) + len(d.get("session_crons") or [])
+    # StopFailure: the turn ended on an API error instead (rate_limit = the plan's usage limit, overloaded, ...).
+    # The worker did not finish and will not go on by itself; the board has to say so.
+    error = str(d.get("error") or "unknown")[:40] if d.get("hook_event_name") == "StopFailure" or d.get("error") else ""
     with board_lock():
         b = board_load()
         for t in b["tasks"]:
             if t.get("cliSession") == sid and t["status"] in ("running", "waiting"):
-                t["last"], t["turnEnded"], t["pending"] = last[:200], time.time(), pending
+                t["last"], t["turnEnded"], t["pending"] = last[:200], time.time(), 0 if error else pending
+                if error:
+                    t["stopped"] = error
+                else:
+                    t.pop("stopped", None)
         board_save(b)
+
+
+def stopped_workers(error="rate_limit"):
+    """Open board rows whose worker was cut off by this API error and has not run since."""
+    return [t for t in (read_json(BOARD, {}) or {}).get("tasks", [])
+            if t.get("stopped") == error and t.get("status") == "waiting"]
 
 
 def workspace():
@@ -1054,6 +1074,7 @@ def board_refresh(b, agents=None):
             t.pop("waitingFor", None)
         if busy:
             t.pop("pending", None)  # a new turn: what the last one left running is out of date
+            t.pop("stopped", None)
         elif new == "waiting" and not asks and t.get("pending") and now - t.get("turnEnded", 0) < PENDING_GRACE:
             new = "running"  # its turn ended with background work or a wakeup pending: it wakes itself
         if new == "waiting" and t["status"] == "running":
@@ -1165,7 +1186,12 @@ def cmd_board():
                              if t.get("report") else ""))
         if t.get("waitingFor") and t["status"] == "waiting":
             print(f"         NEEDS THE USER NOW: {t['waitingFor']}")
-        if t.get("last") and t["status"] in ("running", "waiting"):
+        if t.get("stopped") and t["status"] == "waiting":
+            ago = round((time.time() - t.get("turnEnded", time.time())) / 60)
+            print(f"         STOPPED {ago} min ago by an API error ({t['stopped']}): it did not finish. "
+                  + ("Once the usage limit has reset, tell it to continue." if t["stopped"] == "rate_limit"
+                     else "Open it, or tell it to continue."))
+        elif t.get("last") and t["status"] in ("running", "waiting"):
             ago = round((time.time() - t.get("turnEnded", time.time())) / 60)
             print(f"         its last turn ended {ago} min ago: {t['last'][:160]}"
                   + (f" ({t['pending']} background task(s) or wakeup(s) pending)" if t.get("pending") else ""))

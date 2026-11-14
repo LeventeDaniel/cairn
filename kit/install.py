@@ -167,6 +167,8 @@ def install():
     hooks.setdefault("SessionStart", []).append({"hooks": [{"type": "command", "command": cmd("session-start")}]})
     # async: it only writes a board row, the turn must not wait for it
     hooks.setdefault("Stop", []).append({"hooks": [{"type": "command", "command": cmd("stop"), "async": True}]})
+    # the turn ended on an API error (the usage limit, overload): the same command marks the board row "stopped"
+    hooks.setdefault("StopFailure", []).append({"hooks": [{"type": "command", "command": cmd("stop"), "async": True}]})
     old = s.get("statusLine")
     if old and not is_ours(old):
         cfg["chain_statusline"] = old.get("command")      # keep the user's status line and show both

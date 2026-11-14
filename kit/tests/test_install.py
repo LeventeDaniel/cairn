@@ -74,8 +74,10 @@ class Install(unittest.TestCase):
     def test_stop_hook_is_installed_async_once_and_removed(self):
         self.install()
         self.install()
-        stop = json.loads((self.cl / "settings.json").read_text(encoding="utf-8"))["hooks"]["Stop"]
+        hooks = json.loads((self.cl / "settings.json").read_text(encoding="utf-8"))["hooks"]
+        stop = hooks["Stop"]
         self.assertEqual(len(stop), 1)
+        self.assertEqual(hooks["StopFailure"], stop)  # an API error ending the turn runs the same command
         h = stop[0]["hooks"][0]
         self.assertTrue(h["command"].endswith("cairn.py stop"))
         self.assertIs(h["async"], True)  # it only writes a board row: the turn must not wait for it
