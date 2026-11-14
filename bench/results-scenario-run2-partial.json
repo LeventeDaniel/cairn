@@ -1,0 +1,150 @@
+{
+ "A_one_session": {
+  "rows": [
+   {
+    "usd": 0.006421649999999999,
+    "ctx": 177707,
+    "write": 19594,
+    "read": 158105,
+    "out": 1842,
+    "secs": 15.8,
+    "sid": "291aac23-9f4b-411a-aaf7-e052cec5d4f6",
+    "turns": 6,
+    "stage": "pkg",
+    "correct": false
+   },
+   {
+    "usd": 0.009482589999999999,
+    "ctx": 106586,
+    "write": 7188,
+    "read": 99394,
+    "out": 1258,
+    "secs": 15.7,
+    "sid": "291aac23-9f4b-411a-aaf7-e052cec5d4f6",
+    "turns": 3,
+    "stage": "tests",
+    "correct": true
+   },
+   {
+    "usd": 0.01578088,
+    "ctx": 251942,
+    "write": 11785,
+    "read": 240149,
+    "out": 3078,
+    "secs": 26.3,
+    "sid": "291aac23-9f4b-411a-aaf7-e052cec5d4f6",
+    "turns": 8,
+    "stage": "feature",
+    "correct": true
+   },
+   {
+    "usd": 0.01997726,
+    "ctx": 204727,
+    "write": 4053,
+    "read": 200668,
+    "out": 2757,
+    "secs": 20.8,
+    "sid": "291aac23-9f4b-411a-aaf7-e052cec5d4f6",
+    "turns": 4,
+    "stage": "docs",
+    "correct": true
+   },
+   {
+    "usd": 0.023363450000000004,
+    "ctx": 214384,
+    "write": 2649,
+    "read": 211729,
+    "out": 1477,
+    "secs": 18.6,
+    "sid": "291aac23-9f4b-411a-aaf7-e052cec5d4f6",
+    "turns": 4,
+    "stage": "bugfix",
+    "correct": true
+   }
+  ],
+  "usd": 0.07502583,
+  "secs": 97.19999999999999,
+  "correct": 4,
+  "ctx_curve": [
+   177707,
+   106586,
+   251942,
+   204727,
+   214384
+  ]
+ },
+ "B_handoff": {
+  "rows": [
+   {
+    "usd": 0.0091033,
+    "ctx": 291649,
+    "write": 24417,
+    "read": 267220,
+    "out": 3093,
+    "secs": 27.3,
+    "sid": "cdd21f00-0c95-448b-a2f9-17ae817a5212",
+    "turns": 8,
+    "stage": "pkg",
+    "correct": false
+   },
+   {
+    "usd": 0.00845502,
+    "ctx": 216273,
+    "write": 26603,
+    "read": 189662,
+    "out": 2474,
+    "secs": 23.3,
+    "sid": "785e51de-cc04-48a0-bf72-1db2f6cc1bad",
+    "turns": 7,
+    "stage": "tests",
+    "correct": true
+   },
+   {
+    "usd": 0.01128404,
+    "ctx": 228489,
+    "write": 32097,
+    "read": 196384,
+    "out": 5800,
+    "secs": 33.0,
+    "sid": "7c7ddbcb-1d0a-4b37-b7d8-a20c36997201",
+    "turns": 13,
+    "stage": "feature",
+    "correct": true
+   },
+   {
+    "usd": 0,
+    "ctx": 0,
+    "write": 0,
+    "read": 0,
+    "out": 0,
+    "secs": 5.0,
+    "sid": "4c59a2d5-a0e6-41b0-ac92-5cc8bf02adfd",
+    "turns": 1,
+    "stage": "docs",
+    "correct": false
+   },
+   {
+    "usd": 0,
+    "ctx": 0,
+    "write": 0,
+    "read": 0,
+    "out": 0,
+    "secs": 4.4,
+    "sid": "1c90fbf4-b9bc-44b0-b8bb-1658c644345b",
+    "turns": 1,
+    "stage": "bugfix",
+    "correct": true
+   }
+  ],
+  "usd": 0.028842360000000004,
+  "secs": 93.0,
+  "correct": 3,
+  "ctx_curve": [
+   291649,
+   216273,
+   228489,
+   0,
+   0
+  ]
+ }
+}

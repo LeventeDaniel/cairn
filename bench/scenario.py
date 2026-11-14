@@ -9,10 +9,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import run
 STAGES = [
  ('pkg', 'In this folder create a python package shop/ with models.py (Item, Cart classes), pricing.py (total with 10% discount over 100) and __init__.py. Keep it small.',
-  'import shop.models, shop.pricing'),
+  'python -c "import shop.models, shop.pricing"'),
  ('tests', 'Write tests.py with 6 plain-assert tests for the shop package and run it with python tests.py until it passes.', 'python tests.py'),
  ('feature', 'Add a coupon feature: Cart.apply_coupon(code) with codes SAVE5 (5 off) and HALF (50%). Add 3 tests and keep all tests passing.', 'python tests.py'),
- ('docs', 'Write README.md documenting every public function and class in shop/, then verify each name mentioned exists.', 'test -s README.md'),
+ ('docs', 'Write README.md documenting every public function and class in shop/, then verify each name mentioned exists.', "python -c \"import os,sys;sys.exit(0 if os.path.getsize('README.md')>0 else 1)\""),
  ('bugfix', 'A bug report says totals are wrong when the cart is empty after a coupon. Reproduce it in a test, fix it, keep all tests passing.', 'python tests.py'),
 ]
 NOTE = 'Continue the project in this folder. Read SESSION.md first for what exists, do ONLY the stage below, then update SESSION.md (state, files, next).\n\nStage: '
