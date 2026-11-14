@@ -339,16 +339,25 @@ def take_inbox(name):
         return ""
     box = INBOX / f"{name}.md"
     try:
-        notes = box.read_text(encoding="utf-8")
+        if box.stat().st_size == 0:
+            return ""
+        # Take the file away first, then read it. Reading and then emptying it lost a note appended in
+        # between, and two sessions starting together both delivered the same notes.
+        mine = box.with_name(f"{name}.{os.getpid()}.taking")
+        os.replace(box, mine)
+        notes = mine.read_text(encoding="utf-8")
     except OSError:
-        return ""
-    if not notes.strip():
         return ""
     arch = INBOX / "archive"
     arch.mkdir(parents=True, exist_ok=True)
     with open(arch / f"{name}.md", "a", encoding="utf-8") as a:
-        a.write(notes)
-    box.write_text("", encoding="utf-8")
+        a.write(notes if notes.endswith("\n") or not notes else notes + "\n")
+    try:
+        mine.unlink()
+    except OSError:
+        pass
+    if not notes.strip():
+        return ""
     return (f"[Cairn] New notes for '{name}' (results from sessions you started, or notes from other "
             "repos) — tell the user in one line each:\n" + notes[:3000])
 
@@ -415,9 +424,10 @@ def registry_touch(root):
             break
     if best:
         i, _, f = best
-        f[4] = today
-        lines[i] = "- " + " | ".join(f)
-        write_text_atomic(REGISTRY, "\n".join(lines) + "\n")
+        if f[4] != today:  # once a day, not at every session start: each rewrite could undo an edit made meanwhile
+            f[4] = today
+            lines[i] = "- " + " | ".join(f)
+            write_text_atomic(REGISTRY, "\n".join(lines) + "\n")
         return f[0], False
     name = re.sub(r"[^A-Za-z0-9_.-]", "-", Path(root).name) or "project"
     if not registrable(root):

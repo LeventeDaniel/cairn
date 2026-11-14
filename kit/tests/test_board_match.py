@@ -362,5 +362,50 @@ class StopFailure(unittest.TestCase):
         self.assertEqual(r["last"], "Done.")
 
 
+class Inbox(unittest.TestCase):
+    def setUp(self):
+        self.m = load(Path(tempfile.mkdtemp()))
+        self.m.INBOX = self.m.HOME / "inbox"
+        self.m.INBOX.mkdir(parents=True)
+        self.box = self.m.INBOX / "r.md"
+
+    def test_notes_are_delivered_once_and_archived(self):
+        self.box.write_text("- note one")
+        out = self.m.take_inbox("r")
+        self.assertIn("note one", out)
+        self.assertEqual(self.m.take_inbox("r"), "")
+        self.assertFalse(self.box.exists())
+        self.assertEqual((self.m.INBOX / "archive" / "r.md").read_text(), "- note one" + chr(10))
+        self.assertEqual(list(self.m.INBOX.glob("*.taking")), [])
+
+    def test_a_note_written_while_one_session_takes_the_inbox_is_not_lost(self):
+        self.box.write_text("- first" + chr(10))
+        real = Path.read_text
+
+        def late_writer(path, *a, **k):
+            text = real(path, *a, **k)
+            if path.name.endswith(".taking"):   # another session passes a note right now
+                with open(self.box, "a", encoding="utf-8") as f:
+                    f.write("- second" + chr(10))
+            return text
+
+        with mock.patch.object(Path, "read_text", late_writer):
+            self.assertNotIn("second", self.m.take_inbox("r"))
+        self.assertIn("second", self.m.take_inbox("r"))   # still there for the next session
+
+    def test_registry_is_rewritten_once_a_day_only(self):
+        from datetime import date
+        repo = self.m.HOME / "proj"
+        repo.mkdir()
+        line = f"- proj | {repo} | does things | active | "
+        self.m.REGISTRY.write_text("# Repo registry" + chr(10) + line + "2026-01-01" + chr(10))
+        self.assertEqual(self.m.registry_touch(str(repo)), ("proj", False))
+        self.assertIn(date.today().isoformat(), self.m.REGISTRY.read_text())
+        before = self.m.REGISTRY.stat().st_mtime_ns
+        with mock.patch.object(self.m, "write_text_atomic", side_effect=AssertionError("rewritten")):
+            self.assertEqual(self.m.registry_touch(str(repo)), ("proj", False))
+        self.assertEqual(self.m.REGISTRY.stat().st_mtime_ns, before)
+
+
 if __name__ == "__main__":
     unittest.main()
