@@ -905,12 +905,12 @@ class board_lock:
                 pass
 
 
-AGENT_NAME_MAX = 40  # `claude agents` cuts session names to 40 characters
-
-
 def same_title(agent_name, title):
     a, t = (agent_name or "").strip().lower(), (title or "").strip().lower()
-    return bool(a) and (a == t or (len(t) > AGENT_NAME_MAX and a == t[:AGENT_NAME_MAX].strip()))
+    return bool(a) and a == t
+
+
+GONE_GRACE = 120  # seconds a session must stay missing from `claude agents` before its task is auto-closed
 
 
 def board_refresh(b, agents=None):
@@ -922,7 +922,9 @@ def board_refresh(b, agents=None):
         return b  # no CLI or no answer: keep what we have rather than mark everything closed
     by_id = {x.get("sessionId"): x for x in agents if x.get("sessionId")}
     match, claimed = {}, set()
-    for t in b["tasks"]:  # by id first; finished tasks keep their session too
+    # by id first; finished tasks keep their session too. A row Home gave a session to goes before one
+    # without (a duplicate that once borrowed the id by title must not keep it).
+    for t in sorted(b["tasks"], key=lambda t: (not t.get("session"), -t["started"])):
         for sid in (t.get("cliSession"), (t.get("session") or "").replace("local_", "")):
             if sid and sid in by_id and sid not in claimed:
                 match[t["id"]] = by_id[sid]
@@ -944,11 +946,17 @@ def board_refresh(b, agents=None):
         if final(t):
             continue  # an explicit close is final; only an auto-close (session gone) may come back
         a = match.get(t["id"])
+        now = time.time()
         if a is None:
-            t.pop("cliSession", None)
-            if t["status"] != "closed" and time.time() - t["started"] > 300:
+            # Not on one look: a single short or partial answer from the CLI closed live workers
+            # (seen live), and nothing reopened them.
+            gone = t.setdefault("goneSince", now)
+            if t["status"] != "closed" and now - t["started"] > 300 and now - gone >= GONE_GRACE:
                 t["status"] = "closed"
+            if t["status"] == "closed":
+                t.pop("cliSession", None)
             continue
+        t.pop("goneSince", None)
         t["cliSession"] = a.get("sessionId")
         st = a.get("status")
         new = "running" if st == "busy" else "waiting" if st in ("idle", "waiting") else t["status"]
@@ -1034,7 +1042,9 @@ def cmd_report():
 
 def board_rows(refresh=True):
     b = board_load()
-    if refresh and any(t["status"] in ("running", "waiting") for t in b["tasks"]):
+    # also for auto-closed rows: their session may be back (resumed, or the CLI's last answer was short)
+    if refresh and any(t["status"] in ("running", "waiting") or (t["status"] == "closed" and t.get("closedBy") != "report")
+                       for t in b["tasks"]):
         live_agents()  # slow (starts the CLI): ask first, then read-change-write the board in one short step
         with board_lock():
             b = board_refresh(board_load())

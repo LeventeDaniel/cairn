@@ -31,6 +31,7 @@ class Match(unittest.TestCase):
             run(self.m, "dispatch", "--repo", "a", "--title", "a: morning digest")
         self.age(t1=900, t2=600, t3=400)
         self.m._AGENTS = [agent("u9", "a: morning digest")]
+        self.m.GONE_GRACE = 0
         r = self.rows()
         self.assertEqual((r["t3"]["status"], r["t3"]["cliSession"]), ("waiting", "u9"))
         self.assertEqual(r["t1"]["status"], "closed")
@@ -48,14 +49,43 @@ class Match(unittest.TestCase):
         self.assertEqual(r["t2"]["status"], "running")  # just dispatched, its own session not up yet
         self.assertNotIn("cliSession", r["t2"])
 
-    def test_long_title_matches_the_name_the_cli_cuts_at_40(self):
-        title = "a: audit public repo for sensitive data and more"
-        run(self.m, "dispatch", "--repo", "a", "--title", title)
-        self.age(t1=600)
-        self.m._AGENTS = [agent("u1", title[:40], "busy", time.time() - 500)]
+    def test_a_duplicate_that_borrowed_the_session_id_gives_it_back(self):
+        run(self.m, "dispatch", "--repo", "a", "--title", "a: digest")                          # t1, duplicate, no session
+        run(self.m, "dispatch", "--repo", "a", "--title", "a: digest", "--session", "local_real")  # t2, the real one
+        b = json.loads(self.m.BOARD.read_text())
+        b["tasks"][0].update(cliSession="u9", status="waiting", started=b["tasks"][0]["started"] - 900)
+        b["tasks"][1].update(cliSession="u9")
+        self.m.BOARD.write_text(json.dumps(b))
+        self.m._AGENTS = [agent("u9", "a: digest", "busy")]
+        self.m.GONE_GRACE = 0
         r = self.rows()
-        self.assertEqual((r["t1"]["status"], r["t1"]["cliSession"]), ("running", "u1"))
-        self.assertFalse(self.m.same_title("a: audit", "a: audit public"))  # a short name is not a prefix match
+        self.assertEqual((r["t2"]["status"], r["t2"]["cliSession"]), ("running", "u9"))
+        self.assertEqual(r["t1"]["status"], "closed")
+        self.assertNotIn("cliSession", r["t1"])
+
+    def test_one_short_answer_from_the_cli_does_not_close_a_live_worker(self):
+        run(self.m, "dispatch", "--repo", "a", "--title", "a: long job", "--session", "local_j")
+        self.age(t1=900)
+        self.m._AGENTS = [agent("u1", "a: long job", "busy", time.time() - 800)]
+        self.assertEqual(self.rows()["t1"]["status"], "running")
+        self.m._AGENTS = [agent("zz", "someone else")]           # our session is missing from this answer
+        self.assertEqual(self.rows()["t1"]["status"], "running")  # first miss: only noted
+        self.m._AGENTS = [agent("u1", "a: long job", "idle", time.time() - 800)]
+        r = self.rows()["t1"]
+        self.assertEqual(r["status"], "waiting")
+        self.assertNotIn("goneSince", r)
+
+    def test_gone_for_good_closes_after_the_grace_and_can_come_back(self):
+        run(self.m, "dispatch", "--repo", "a", "--title", "a: job", "--session", "local_j")
+        self.age(t1=900)
+        self.m._AGENTS = [agent("zz", "someone else")]
+        self.rows()
+        b = json.loads(self.m.BOARD.read_text())
+        b["tasks"][0]["goneSince"] -= 300
+        self.m.BOARD.write_text(json.dumps(b))
+        self.assertEqual(self.rows()["t1"]["status"], "closed")
+        self.m._AGENTS = [agent("u1", "a: job", "busy", time.time() - 800)]   # resumed: an auto-close is not final
+        self.assertEqual(self.rows()["t1"]["status"], "running")
 
     def test_report_with_a_new_session_drops_the_old_match(self):
         run(self.m, "dispatch", "--repo", "a", "--title", "a: x", "--session", "local_one")

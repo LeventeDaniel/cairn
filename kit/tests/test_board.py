@@ -86,6 +86,7 @@ class Board(unittest.TestCase):
         self.m.BOARD.write_text(json.dumps(b))
         self.m._AGENTS = [{"sessionId": "u1", "name": "example-a: fix login", "status": "idle",
                            "startedAt": time.time() * 1000}]
+        self.m.GONE_GRACE = 0
         rows = {r["id"]: r for r in json.loads(run(self.m, "board", "--json"))}
         self.assertEqual(rows["t1"]["status"], "waiting")
         self.assertEqual(rows["t1"]["cliSession"], "u1")
