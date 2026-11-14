@@ -22,3 +22,16 @@
 2. Run the A/B once logged in; it is the only way to get a defensible number.
 3. Keep logging ledger events for a week, then compare Cairn-compacted sessions to app-compacted ones.
 No code change beyond the measured pane block was justified by the data.
+
+## A/B run (2026-11-14, `bench/run.py --runs 1 --model haiku`, 4 tasks, 1 run per task per arm)
+Measured from `claude -p --output-format json` (reported cost, real total ~0.05 USD; the estimate of 1.30 was far too high).
+
+| | Cairn off | Cairn on |
+|---|---|---|
+| cost per run | $0.0056 | $0.0070 (+24%) |
+| turns per run | 3.0 | 3.5 |
+| avg context per turn | 36.5k | 37.2k (+2%) |
+| output tokens per run | 553 | 1215 |
+
+Reading: Cairn did **not** save here; it cost slightly more (extra turns and output from its CLAUDE.md rules and hooks, +0.7k context per turn). Context per turn differs by only 2%, so the CLAUDE.md block is cheap; the extra cost comes from more turns/output. Caveats: n=4 per arm, one run each, one cheap model, tiny tasks where compaction never triggers (Cairn's main mechanism is untested), run-to-run noise on 3-turn tasks is large. Headless start context is ~36k, not the ~80k seen in the desktop app (that part is the app's own prompt).
+Verdict stands: not proven to save; on short tasks it costs a little more. Its value case (compaction, cold-cache warnings on long sessions) needs long-session data.

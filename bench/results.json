@@ -1,0 +1,90 @@
+{
+ "runs": 4,
+ "model": "haiku",
+ "off": {
+  "usd": 0.005598782500000001,
+  "turns": 3.0,
+  "ctxAvg": 36520.416666666664,
+  "cacheRead": 87313.25,
+  "cacheWrite": 22243.5,
+  "out": 553.0
+ },
+ "on": {
+  "usd": 0.0069574675,
+  "turns": 3.5,
+  "ctxAvg": 37210.21428571428,
+  "cacheRead": 103666.75,
+  "cacheWrite": 26564.0,
+  "out": 1215.0
+ },
+ "raw": {
+  "off": [
+   {
+    "usd": 0.004872420000000001,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 67052,
+    "cacheWrite": 19080,
+    "out": 771
+   },
+   {
+    "usd": 0.00551098,
+    "turns": 2,
+    "fresh": 4,
+    "cacheRead": 77158,
+    "cacheWrite": 22960,
+    "out": 294
+   },
+   {
+    "usd": 0.00641898,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 127888,
+    "cacheWrite": 23705,
+    "out": 797
+   },
+   {
+    "usd": 0.0055927500000000005,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 77155,
+    "cacheWrite": 23229,
+    "out": 350
+   }
+  ],
+  "on": [
+   {
+    "usd": 0.00680976,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 71516,
+    "cacheWrite": 27316,
+    "out": 1262
+   },
+   {
+    "usd": 0.00695367,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 132047,
+    "cacheWrite": 25833,
+    "out": 932
+   },
+   {
+    "usd": 0.00717534,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 132404,
+    "cacheWrite": 26151,
+    "out": 1241
+   },
+   {
+    "usd": 0.006891100000000001,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 78700,
+    "cacheWrite": 26956,
+    "out": 1425
+   }
+  ]
+ }
+}
