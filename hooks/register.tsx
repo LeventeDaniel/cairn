@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage, SessionUsage } from 'claude-code'
 
 import type { Compaction, Offer, Snap, Work, Workspace } from '../types'
-import { LEDGER_DEFAULTS, FILE as LEDGER_FILE, addEvent, parseLedger, summaryLines } from './ledger'
+import { LEDGER_DEFAULTS, FILE as LEDGER_FILE, MEASURED_FILE, addEvent, measuredLines, parseLedger, parseMeasured, summaryLines } from './ledger'
 import type { LedgerEvent } from './ledger'
 
 const VERSION = '0.7.0'
@@ -47,6 +47,8 @@ export type Days = Record<string, { usd: Record<string, number>; fh?: number; sd
 const days = atom({ plugin: 'cairn', key: 'days' } as const, {} as Days, { shape: 'days-1' })
 /** Savings ledger events (~/.claude/cairn/state/ledger.json); see ledger.ts. */
 const ledger = atom({ plugin: 'cairn', key: 'ledger' } as const, [] as LedgerEvent[], { shape: 'ledger-1' })
+/** Pane lines for measured (not estimated) numbers; see ledger.ts. */
+const measured = atom({ plugin: 'cairn', key: 'measured' } as const, [] as string[], { shape: 'measured-1' })
 const ws = atom({ plugin: 'cairn', key: 'ws' } as const,
   null as Workspace | null, { shape: 'ws-1' })
 
@@ -641,6 +643,12 @@ export const register: Register = on => {
       const evs = parseLedger(await $.fs.read(`${claudeDir($.plugin.root)}/${LEDGER_FILE}`))
       await update($, ledger, () => evs)
     } catch { /* no ledger yet */ }
+    try {
+      const m = parseMeasured(await $.fs.read(`${claudeDir($.plugin.root)}/${MEASURED_FILE}`))
+      await update($, measured, () => measuredLines(m))
+    } catch {
+      await update($, measured, () => measuredLines(null))
+    }
     void refreshWorkspace($, true)
     return ran
   })
@@ -772,6 +780,7 @@ export const register: Register = on => {
     const w2 = await read($, ws)
     const dd = await read($, days)
     const led = await read($, ledger)
+    const meas = await read($, measured)
     const now = await $.clock.now()
     const p = s.percent
     const color = s.level === 2 ? 'red' : s.level === 1 ? 'yellow' : 'green'
@@ -810,6 +819,9 @@ export const register: Register = on => {
         <Text bold>Savings</Text>
         {summaryLines(led, dd, now, cfg).map((l, i) => (
           <Text dimColor={i > 0 && l.startsWith('Estimate')}>{l}</Text>
+        ))}
+        {meas.map((l, i) => (
+          <Text color={i === 0 ? 'cyan' : undefined} dimColor={i > 0}>{l}</Text>
         ))}
         <Text> </Text>
         <Text bold>Work tracked</Text>

@@ -137,3 +137,41 @@ export function summaryLines(events: readonly LedgerEvent[], days: Days, now: nu
   out.push(`Estimate only: ${c.ledger_turns} later replies per compaction at $${c.ledger_read_usd_per_mtok}/Mtok; cold re-read at $${c.ledger_write_usd_per_mtok}/Mtok.`)
   return out
 }
+
+/**
+ * MEASURED numbers: bench/mine.py (history) and bench/run.py (A/B runs) write
+ * ~/.claude/cairn/state/measured.json. Shown apart from the estimates above.
+ */
+export const MEASURED_FILE = 'cairn/state/measured.json'
+
+export type Arm = { usd: number; turns: number; ctxAvg: number; cacheRead: number; cacheWrite: number; out: number }
+export type Measured = {
+  generated?: string
+  history?: { compactions: number; medianBefore: number; medianAfter: number; minRepliesAfter: number; medianRepliesAfter: number; floor: number }
+  bench?: { runs: number; model: string; off: Arm; on: Arm }
+}
+
+export function parseMeasured(raw: string): Measured | null {
+  try {
+    const v = JSON.parse(raw) as unknown
+    return v && typeof v === 'object' ? (v as Measured) : null
+  } catch {
+    return null
+  }
+}
+
+export function measuredLines(m: Measured | null): string[] {
+  if (!m || (!m.history && !m.bench)) return ['Measured: nothing yet (run bench/mine.py, and bench/run.py once the CLI is logged in).']
+  const out: string[] = []
+  const h = m.history
+  if (h) {
+    out.push(`Measured (history, ${h.compactions} compactions): context ${k(h.medianBefore)} → ${k(h.medianAfter)}; ${h.minRepliesAfter}+ replies followed each (median ${h.medianRepliesAfter}).`)
+    out.push(`Measured: every session starts at ~${k(h.floor)} tokens before Cairn adds anything.`)
+  }
+  const b = m.bench
+  if (b) {
+    const p = b.off.usd ? ((b.on.usd - b.off.usd) / b.off.usd) * 100 : 0
+    out.push(`Measured A/B (${b.runs} runs/arm, ${b.model}): Cairn off $${b.off.usd.toFixed(3)}/run, on $${b.on.usd.toFixed(3)}/run (${p >= 0 ? '+' : ''}${p.toFixed(0)}%). Small sample.`)
+  } else out.push('Measured A/B: not run yet, so no measured saving or cost for Cairn.')
+  return out
+}

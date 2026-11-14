@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { addEvent, compareCost, summarize, summaryLines } from './ledger'
+import { addEvent, compareCost, measuredLines, parseMeasured, summarize, summaryLines } from './ledger'
 import type { LedgerEvent } from './ledger'
 
 const norm = (p: unknown) => String(p).split(String.fromCharCode(92)).join('/')
@@ -103,4 +103,17 @@ test('a compaction the app runs is logged as app; one Cairn queues is logged as 
   expect((await ui.find({ type: 'Text', text: /Last 7 days: 2 compaction/ }))?.text).toContain('1 Cairn, 1 app')
   expect((await ui.find({ type: 'Text', text: /Estimate only/ }))).toBeTruthy()
   await ui.unmount()
+})
+
+test('measured lines are labelled and never invent an A/B result', () => {
+  expect(measuredLines(null)[0]).toContain('nothing yet')
+  const h = { compactions: 11, medianBefore: 245000, medianAfter: 98000, minRepliesAfter: 15, medianRepliesAfter: 433, floor: 80000 }
+  const l = measuredLines({ history: h })
+  expect(l[0]).toContain('Measured (history, 11 compactions)')
+  expect(l.join(' ')).toContain('not run yet')
+  const arm = { usd: 0.1, turns: 4, ctxAvg: 90000, cacheRead: 1, cacheWrite: 1, out: 1 }
+  const ab = measuredLines({ bench: { runs: 3, model: 'haiku', off: arm, on: { ...arm, usd: 0.11 } } })
+  expect(ab.join(' ')).toContain('+10%')
+  expect(ab.join(' ')).toContain('Small sample')
+  expect(parseMeasured('nope')).toBe(null)
 })
