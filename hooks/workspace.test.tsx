@@ -34,6 +34,7 @@ const WS = {
 }
 
 const afters: number[] = []
+const toasts: string[] = []
 
 function engine(on: any, settings: Record<string, unknown>, long = { n: 0 }) {
   const runs: string[][] = []
@@ -49,7 +50,7 @@ function engine(on: any, settings: Record<string, unknown>, long = { n: 0 }) {
   on('fs.write', () => ({ value: undefined }))
   on('store.get', () => ({ value: undefined }))
   on('store.set', () => ({ value: undefined }))
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.toast', (_: any, e: any) => { toasts.push(e.text); return { value: undefined } })
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
   on('clock.now', () => ({ value: 1000 }))
@@ -152,4 +153,20 @@ test('six edits after SESSION.md was last written make the pane ask for a handof
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' } as any)
   expect((await ui.find({ type: 'Text', text: /edits behind/ }))?.text).toContain('6 edits behind')
   await ui.unmount()
+})
+
+test('a board task that finishes or starts waiting on you raises a toast', async ($, on) => {
+  toasts.length = 0
+  const wasRunning = WS.board![1]!
+  engine(on, { hooks: HOOKS })
+  on('command.run', () => ({ text: 'ok' }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await settle()
+  expect(toasts.length).toBe(0)
+  wasRunning.status = 'done'
+  wasRunning.report = 'all committed'
+  await $.command.run({ command: 'cairn', args: '' } as any)
+  await settle()
+  expect(toasts.some(t => t.startsWith('Finished: example-a: new header'))).toBe(true)
+  wasRunning.status = 'running'
 })

@@ -131,6 +131,13 @@ async function refreshWorkspace($: EngineInterface, force = false) {
     const key = JSON.stringify({ ...w, at: 0 })
     changed = key !== wsKey
     wsKey = key
+    for (const t of w.board ?? []) {
+      const was = boardSeen.get(t.id)
+      if (boardSeen.size > 0 && was !== undefined && was !== t.status && (t.status === 'done' || t.status === 'waiting')) {
+        $.ui.toast((t.status === 'done' ? 'Finished: ' : 'Needs you: ') + t.title.slice(0, 50) + (t.report ? ' - ' + t.report.slice(0, 60) : ''))
+      }
+    }
+    boardSeen = new Map((w.board ?? []).map(t => [t.id, t.status]))
     await update($, ws, () => w)
   } catch (err) {
     $.ui.log(`cairn: workspace refresh failed: ${String(err)}`)
@@ -145,6 +152,7 @@ async function refreshWorkspace($: EngineInterface, force = false) {
 // going only while the board keeps changing (an unchanged re-read ends the chain).
 let wsTimer = false
 let wsKey = ''
+let boardSeen = new Map<string, string>()
 let timerFired = false
 function armWorkspaceTimer($: EngineInterface) {
   if (wsTimer) return
