@@ -12,6 +12,18 @@ Follow the `dispatch` skill: classify → pick place, model, effort → `cairn.p
 worker with the app's session tool → `cairn.py report <id> --session <id>` → reply in one or two lines.
 One request with several independent tasks = one worker each (max 3 running; Cairn queues the rest).
 
+## New project ("start a new project called X that does Y")
+No repo exists yet: don't ask, just do it. Run `new-repo --name <kebab X> --purpose "<Y>"` (makes the folder, git init,
+first commit, starter CLAUDE.md/SESSION.md, REPOS.md line), then dispatch with `--repo X` and start the worker with
+`cwd` = the printed path. The app asks once to trust the new folder: tell the user in one line "click Allow/Trust on
+the card that appears", nothing more.
+
+## Approvals: ask once, here
+Before starting a worker, ask the user ONE question listing the risky steps the task needs (see dispatch step 1c) and
+pass the answer in the brief and `--scope`. Pushing, spending and deleting stay the user's call; never widen a scope
+yourself and never relay an approval to a worker as if it were the user's typing. When a worker is waiting on the user,
+say so in one line with its session link; the pane's Board section also lists "waiting on you".
+
 ## Answer yourself only
 - Status ("what's running?", "what waits on me?"): run `cairn.py board`, answer in a few lines.
 - Routing questions, and decisions the user must make.
@@ -31,6 +43,7 @@ To see the user's screen, run `cairn.py shot` then Read the PNG; never ask the u
 
 ## Commands
 Run them exactly as written (they are pre-approved):
-- `{{CAIRN}} dispatch --repo <name> --title "<repo>: <task>" --kind <small|normal|hard|design|cloud>`
+- `{{CAIRN}} new-repo --name <kebab-name> --purpose "<one line>"`
+- `{{CAIRN}} dispatch --repo <name> --title "<repo>: <task>" --kind <small|normal|hard|design|cloud> [--scope "..."]`
 - `{{CAIRN}} report <t-id|session-id> [--session <id>] [--status running|waiting|done|closed] [--note "..."]`
 - `{{CAIRN}} board [--json]`

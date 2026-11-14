@@ -29,10 +29,29 @@ def run(m, *argv, stdin=None):
     try:
         with redirect_stdout(out):
             {"dispatch": m.cmd_dispatch, "report": m.cmd_report, "board": m.cmd_board,
-             "prompt": m.cmd_prompt, "session-start": m.cmd_session_start}[argv[0]]()
+             "prompt": m.cmd_prompt, "new-repo": m.cmd_new_repo, "session-start": m.cmd_session_start}[argv[0]]()
     finally:
         sys.stdin = old
     return out.getvalue()
+
+
+class NewRepo(unittest.TestCase):
+    def test_creates_folder_commit_and_registry(self):
+        import subprocess
+        tmp = Path(tempfile.mkdtemp())
+        m = load(tmp)
+        m.CAIRN.mkdir(parents=True)
+        m.CFG.write_text(json.dumps({"repos_dir": str(tmp / "ws")}))
+        out = run(m, "new-repo", "--name", "demo x", "--purpose", "does | Y")
+        self.assertIn("CREATED demo-x", out)
+        self.assertIn("trust", out)
+        repo = tmp / "ws" / "demo-x"
+        for f in ("README.md", "CLAUDE.md", "SESSION.md", ".git"):
+            self.assertTrue((repo / f).exists(), f)
+        log = subprocess.run(["git", "log", "--oneline"], cwd=repo, capture_output=True, text=True).stdout
+        self.assertEqual(len(log.splitlines()), 1)
+        self.assertEqual(m.registry()[0]["purpose"], "does / Y")
+        self.assertIn("REFUSED", run(m, "new-repo", "--name", "demo-x", "--purpose", "again"))
 
 
 class Board(unittest.TestCase):
@@ -111,3 +130,11 @@ class Hooks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Scope(unittest.TestCase):
+    def test_scope_is_recorded_and_echoed(self):
+        m = load(Path(tempfile.mkdtemp()))
+        out = run(m, "dispatch", "--repo", "a", "--title", "a: x", "--scope", "push own repo; spend<=5USD")
+        self.assertIn("scope='push own repo; spend<=5USD'", out)
+        self.assertEqual(json.loads(m.BOARD.read_text())["tasks"][0]["scope"], "push own repo; spend<=5USD")

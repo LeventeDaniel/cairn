@@ -10,6 +10,9 @@ Subcommands (wired up by install.py):
   dispatch       Home: add a task to the board (checks the running cap, fills model/effort defaults)
   report         update a board row (session id, status, one-line report)
   board          the task board, statuses refreshed from `claude agents`
+  workspace      every registered repo: goal, live sessions, worktrees, notes waiting (--json)
+  cleanup        list stale worktrees and old closed sessions (removes nothing)
+  shot           save a screenshot of the primary screen to ~/.claude/cairn/shots/latest.png
 
 Only standard-library Python. Works on macOS, Linux and Windows.
 """
@@ -822,6 +825,7 @@ def cmd_dispatch():
     ap.add_argument("--model", default="")
     ap.add_argument("--effort", default="")
     ap.add_argument("--session", default="")
+    ap.add_argument("--scope", default="", help="risky steps the user pre-approved in Home, e.g. 'install; spend<=5USD'")
     a = ap.parse_args(sys.argv[2:])
     c = cfg()
     b = board_refresh(board_load())
@@ -829,6 +833,8 @@ def cmd_dispatch():
     t = {"id": f"t{b['next']}", "repo": a.repo, "title": a.title[:80], "kind": a.kind,
          "model": a.model or model, "effort": a.effort or effort, "session": a.session,
          "status": "running", "started": time.time(), "updated": time.time(), "report": ""}
+    if a.scope:
+        t["scope"] = a.scope[:200]
     running = [x for x in b["tasks"] if x["status"] == "running"]
     if len(running) >= c["max_running"] and a.kind != "cloud":
         t["status"] = "queued"
@@ -840,7 +846,7 @@ def cmd_dispatch():
               f"tell the user in one line it's queued behind: " + "; ".join(x['title'] for x in running) +
               f". Start it when one finishes, then `cairn.py report {t['id']} --status running --session <id>`.")
     else:
-        print(f"OK {t['id']} model={t['model']} effort={t['effort']}. Start the worker now, titled '{t['title']}', "
+        print(f"OK {t['id']} model={t['model']} effort={t['effort']}" + (f" scope={t['scope']!r}" if a.scope else "") + f". Start the worker now, titled '{t['title']}', "
               f"then record it: `cairn.py report {t['id']} --session <the session_id start_session returned>`.")
 
 
@@ -940,6 +946,49 @@ def cloud_streak(log, from_session, days=7):
     return n
 
 
+def create_repo(name, purpose, c=None):
+    """New project folder under repos_dir: git init, README, starter CLAUDE.md + SESSION.md, one commit,
+    REPOS.md line with the real purpose. Returns (path, error)."""
+    c = c or cfg()
+    purpose = " ".join(purpose.replace("|", "/").split()) or "?"
+    repo = Path(os.path.expanduser(c["repos_dir"])) / name
+    if repo.exists() and any(repo.iterdir()):
+        return None, f"REFUSED: {repo} already exists and isn't empty. Pick another name or use --repo."
+    if any(r["name"] == name for r in registry()):
+        return None, f"REFUSED: '{name}' is already in REPOS.md. Pick another name."
+    if not shutil.which("git"):
+        return None, "REFUSED: git isn't installed (or not on PATH), so a new repo can't be created. Install git first."
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "README.md").write_text(f"# {name}\n\n{purpose}\n", encoding="utf-8")
+    (repo / "CLAUDE.md").write_text(f"# {name}\n\nPurpose: {purpose}\n\nNo build or test commands yet; add them here once they exist.\n", encoding="utf-8")
+    (repo / "SESSION.md").write_text(f"# Session state\n\nGoal: {purpose}\nStatus: just created, nothing built yet.\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo)
+    subprocess.run(["git", "add", "-A"], cwd=repo)
+    subprocess.run(["git", "-c", "user.name=Cairn", "-c", "user.email=cairn@localhost", "commit", "-q", "-m", "Initial commit"], cwd=repo)
+    lines = REGISTRY.read_text(encoding="utf-8").splitlines() if REGISTRY.exists() else ["# Repo registry"]
+    lines.append(f"- {name} | {repo} | {purpose} | active | {date.today().isoformat()}")
+    REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+    write_text_atomic(REGISTRY, "\n".join(lines) + "\n")
+    return repo, None
+
+
+def cmd_new_repo():
+    """Create the folder + registry line only (Home then starts the worker with the app's session tool)."""
+    import argparse
+    ap = argparse.ArgumentParser(prog="cairn.py new-repo")
+    ap.add_argument("--name", required=True)
+    ap.add_argument("--purpose", required=True)
+    a = ap.parse_args(sys.argv[2:])
+    name = re.sub(r"[^A-Za-z0-9_.-]", "-", a.name).strip("-") or "project"
+    repo, err = create_repo(name, a.purpose)
+    if err:
+        print(err)
+        return
+    print(f"CREATED {name} at {repo} (git init + first commit, registered in REPOS.md). Next: `cairn.py dispatch --repo {name} "
+          f"--title \"{name}: <first task>\" --kind <kind>`, then start_session with cwd {repo}. The app asks the user to "
+          f"trust this new folder once: tell them in one line to click Allow/Trust on that card, nothing else.")
+
+
 def cmd_spawn():
     import argparse, shutil
     ap = argparse.ArgumentParser(prog="cairn.py spawn")
@@ -963,17 +1012,13 @@ def cmd_spawn():
         return
 
     if a.new_repo:
-        base = Path(os.path.expanduser(c["repos_dir"]))
-        repo = base / name
-        if repo.exists() and any(repo.iterdir()):
-            print(f"REFUSED: {repo} already exists and isn't empty. Pick another name or use --repo.")
-            return
-        repo.mkdir(parents=True, exist_ok=True)
-        (repo / "README.md").write_text(f"# {name}\n\n{a.new_repo}\n", encoding="utf-8")
-        subprocess.run(["git", "init", "-q"], cwd=repo)
-        lines = REGISTRY.read_text(encoding="utf-8").splitlines() if REGISTRY.exists() else ["# Repo registry"]
-        lines.append(f"- {name} | {repo} | {a.new_repo} | active | {today}")
-        write_text_atomic(REGISTRY, "\n".join(lines) + "\n")
+        if a.dry_run:
+            repo = Path(os.path.expanduser(c["repos_dir"])) / name
+        else:
+            repo, err = create_repo(name, a.new_repo, c)
+            if err:
+                print(err)
+                return
     else:
         repo = Path(os.path.expanduser(a.repo)) if a.repo else Path(os.getcwd())
         if not repo.is_dir():
@@ -1055,18 +1100,33 @@ def cmd_spawn():
 
 
 def cmd_shot():
-    """Capture the primary screen to ~/.claude/cairn/shots/latest.png and print the path."""
+    """Capture the primary screen to ~/.claude/cairn/shots/latest.png and print the path.
+    Windows: PowerShell. macOS: screencapture. Linux: grim, gnome-screenshot, scrot or ImageMagick import."""
     out = CAIRN / "shots" / "latest.png"
     out.parent.mkdir(parents=True, exist_ok=True)
-    ps = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
-          "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;"
-          "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
-          "$g=[System.Drawing.Graphics]::FromImage($bmp);"
-          "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);"
-          "$bmp.Save($env:CAIRN_SHOT,[System.Drawing.Imaging.ImageFormat]::Png);"
-          "$g.Dispose();$bmp.Dispose()")
-    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                       env={**os.environ, "CAIRN_SHOT": str(out)}, capture_output=True, text=True)
+    if sys.platform == "win32":
+        ps = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+              "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;"
+              "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
+              "$g=[System.Drawing.Graphics]::FromImage($bmp);"
+              "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);"
+              "$bmp.Save($env:CAIRN_SHOT,[System.Drawing.Imaging.ImageFormat]::Png);"
+              "$g.Dispose();$bmp.Dispose()")
+        argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps]
+    elif sys.platform == "darwin":
+        argv = ["screencapture", "-x", str(out)]
+    else:
+        tools = [("grim", ["grim", str(out)]), ("gnome-screenshot", ["gnome-screenshot", "-f", str(out)]),
+                 ("scrot", ["scrot", "-o", str(out)]), ("import", ["import", "-window", "root", str(out)])]
+        argv = next((a for t, a in tools if shutil.which(t)), None)
+        if not argv:
+            print("SHOT FAILED: no screenshot tool found. Install one of: grim, gnome-screenshot, scrot, imagemagick.")
+            return
+    if not shutil.which(argv[0]):
+        print(f"SHOT FAILED: `{argv[0]}` not found on PATH.")
+        return
+    out.unlink(missing_ok=True)
+    r = subprocess.run(argv, env={**os.environ, "CAIRN_SHOT": str(out)}, capture_output=True, text=True)
     if r.returncode or not out.exists():
         print("SHOT FAILED: " + (r.stderr or r.stdout).strip()[:300]); return
     print(out)
@@ -1080,7 +1140,10 @@ if __name__ == "__main__":
         except (AttributeError, ValueError):
             pass
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd and cmd not in ("statusline", "prompt", "session-start", "audit", "spawn", "workspace", "shot",
+                           "cleanup", "dispatch", "report", "board", "new-repo"):
+        print(f"Unknown command '{cmd}'.\n"); print(__doc__); sys.exit(2)
     {"statusline": cmd_statusline, "prompt": cmd_prompt,
-     "session-start": cmd_session_start, "audit": cmd_audit, "spawn": cmd_spawn,
+     "session-start": cmd_session_start, "audit": cmd_audit, "spawn": cmd_spawn, "new-repo": cmd_new_repo,
      "workspace": cmd_workspace, "shot": cmd_shot, "cleanup": cmd_cleanup,
      "dispatch": cmd_dispatch, "report": cmd_report, "board": cmd_board}.get(cmd, lambda: print(__doc__))()

@@ -2,10 +2,25 @@
 
 Session manager for Claude Code (terminal + the desktop app's Code tab).
 
+## Requirements
+- Python 3.8 or newer (standard library only). Windows: `python` from python.org or the Store; macOS/Linux: `python3`.
+- Claude Code (the CLI, or the desktop app's Code tab).
+- Optional: `git` (only for `spawn --new-repo`) and the `claude` CLI logged in (`claude auth login`), only for
+  terminal background/cloud sessions. Without them Cairn tells you and the Code tab's own session tool is used.
+
 ## Install on each computer
-`python3 install.py` (Windows: `python install.py`), then start a new session.
-It works for whichever Claude account is signed in on that computer.
-Remove: `python3 install.py --uninstall`.
+```
+git clone https://github.com/LeventeDaniel/cairn
+cd cairn/kit
+python3 install.py        # Windows: python install.py
+```
+Then start a new session. It works for whichever Claude account is signed in on that computer.
+Installing is safe to re-run. It edits `~/.claude/settings.json` (hooks, status line, permissions; a copy of the original
+is kept as `settings.json.cairn-bak`) and adds a marked block to `~/.claude/CLAUDE.md` without touching your own text.
+It never needs admin rights.
+Remove: `python3 install.py --uninstall` (takes out its hooks, block, skills, agents and script; keeps `REPOS.md`,
+`inbox/`, `SESSION.md` files and your `cairn/config.json`, `board.json`).
+Tests: `python -m unittest discover -s tests`.
 
 For the Code tab, also install the companion mod, which compacts at clean breaks and shows the
 Cairn pane: `claude plugin install cairn@cairn`
@@ -57,4 +72,12 @@ new task send it to Home. At most `max_running` (3) workers run; the rest wait a
 (`compact_mode`, `compact_soft`, …) live in the same file.
 
 ## Screenshots
-To see the user's screen, run `cairn.py shot` then Read the PNG; never ask the user for screenshots. The PNG is saved to `~/.claude/cairn/shots/latest.png` (local only, overwritten each time).
+`cairn.py shot` lets Claude look at your screen instead of asking you for screenshots (Windows: PowerShell; macOS: `screencapture`; Linux: `grim`, `gnome-screenshot`, `scrot` or ImageMagick `import`). The PNG is saved to `~/.claude/cairn/shots/latest.png` (local only, overwritten each time).
+
+## Fewer approval prompts (opt-in)
+`python3 install.py --routine-allow` also allows tests and local git bookkeeping without a prompt (unittest, pytest,
+git status/diff/log/show/add/commit). It never allows push, install, delete or network commands. Re-run `install.py`
+without the flag, or `--uninstall`, to remove exactly the rules it added; your own rules stay.
+Cairn Home asks you once, up front, which risky steps a task may take and passes that to the worker as `Authorized:`.
+What no setting can change: the app only takes an approval typed in the worker's own session, and its safety
+classifier can still block risky actions.
