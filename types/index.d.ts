@@ -75,6 +75,7 @@ export type Workspace = {
   }[]
   unregistered: { title: string; cwd?: string | null; status?: string | null; kind?: string | null }[]
   board?: BoardTask[]
+  stale?: { name: string; worktrees: { path: string; branch: string; dirty: boolean; ageDays: number }[]; oldSessions: number }[]
 }
 
 /** A row of Cairn Home's task board (~/.claude/cairn/board.json), via `cairn.py workspace --json`. */

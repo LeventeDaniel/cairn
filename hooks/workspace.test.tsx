@@ -23,6 +23,7 @@ const WS = {
       sessions: [{ id: 'b', title: 'fix login page', status: 'closed', ageMin: 300, tokens: 90000, warm: false }] },
   ],
   unregistered: [],
+  stale: [{ name: 'example-b', worktrees: [{ path: 'C:/r/b/.claude/worktrees/x', branch: 'x', dirty: true, ageDays: 20 }], oldSessions: 3 }],
   board: [
     { id: 't2', repo: 'example-b', title: 'example-b: fix export', kind: 'normal', model: 'sonnet', effort: 'medium',
       session: 'local_x', status: 'waiting', started: 1, updated: 1, report: 'needs your review' },
@@ -199,4 +200,14 @@ test('a running board task with no news for 90 minutes is marked to check', asyn
   expect((await ui.find({ type: 'Text', text: /t3 example-a: new header/ }))?.text).toContain('quiet 3 h, check it')
   await ui.unmount()
   WS.at = old
+})
+
+test('the pane lists stale worktrees and old sessions, flagging uncommitted work', async ($, on) => {
+  engine(on, { hooks: HOOKS })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' } as any)
+  const t = (await ui.find({ type: 'Text', text: /Stale:/ }))?.text
+  expect(t).toContain('example-b 1 worktree(s) (uncommitted!), 3 old session(s)')
+  await ui.unmount()
 })

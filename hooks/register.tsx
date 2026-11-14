@@ -804,6 +804,8 @@ export const register: Register = on => {
             </Box>
           )
         })()}
+        {w2 && (w2.stale ?? []).length > 0 &&
+          <Text color="yellow">Stale: {(w2.stale ?? []).map(s => `${s.name} ${s.worktrees.length} worktree(s)${s.worktrees.some(x => x.dirty) ? ' (uncommitted!)' : ''}, ${s.oldSessions} old session(s)`).join(' · ')}. Ask Cairn to clean up.</Text>}
         {w2 && w2.unregistered.length > 0 &&
           <Text dimColor>Not in REPOS.md: {w2.unregistered.map(u => `${u.title.slice(0, 30)} (${u.status})`).join(' · ')}</Text>}
         <Text> </Text>
