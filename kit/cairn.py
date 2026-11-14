@@ -10,6 +10,9 @@ Subcommands (wired up by install.py):
   dispatch       Home: add a task to the board (checks the running cap, fills model/effort defaults)
   report         update a board row (session id, status, one-line report)
   board          the task board, statuses refreshed from `claude agents`
+  workspace      every registered repo: goal, live sessions, worktrees, notes waiting (--json)
+  cleanup        list stale worktrees and old closed sessions (removes nothing)
+  shot           save a screenshot of the primary screen to ~/.claude/cairn/shots/latest.png
 
 Only standard-library Python. Works on macOS, Linux and Windows.
 """
@@ -968,12 +971,16 @@ def cmd_spawn():
         if repo.exists() and any(repo.iterdir()):
             print(f"REFUSED: {repo} already exists and isn't empty. Pick another name or use --repo.")
             return
-        repo.mkdir(parents=True, exist_ok=True)
-        (repo / "README.md").write_text(f"# {name}\n\n{a.new_repo}\n", encoding="utf-8")
-        subprocess.run(["git", "init", "-q"], cwd=repo)
-        lines = REGISTRY.read_text(encoding="utf-8").splitlines() if REGISTRY.exists() else ["# Repo registry"]
-        lines.append(f"- {name} | {repo} | {a.new_repo} | active | {today}")
-        write_text_atomic(REGISTRY, "\n".join(lines) + "\n")
+        if not a.dry_run:
+            if not shutil.which("git"):
+                print("REFUSED: git isn't installed (or not on PATH), so a new repo can't be created. Install git first.")
+                return
+            repo.mkdir(parents=True, exist_ok=True)
+            (repo / "README.md").write_text(f"# {name}\n\n{a.new_repo}\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=repo)
+            lines = REGISTRY.read_text(encoding="utf-8").splitlines() if REGISTRY.exists() else ["# Repo registry"]
+            lines.append(f"- {name} | {repo} | {a.new_repo} | active | {today}")
+            write_text_atomic(REGISTRY, "\n".join(lines) + "\n")
     else:
         repo = Path(os.path.expanduser(a.repo)) if a.repo else Path(os.getcwd())
         if not repo.is_dir():
@@ -1055,18 +1062,33 @@ def cmd_spawn():
 
 
 def cmd_shot():
-    """Capture the primary screen to ~/.claude/cairn/shots/latest.png and print the path."""
+    """Capture the primary screen to ~/.claude/cairn/shots/latest.png and print the path.
+    Windows: PowerShell. macOS: screencapture. Linux: grim, gnome-screenshot, scrot or ImageMagick import."""
     out = CAIRN / "shots" / "latest.png"
     out.parent.mkdir(parents=True, exist_ok=True)
-    ps = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
-          "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;"
-          "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
-          "$g=[System.Drawing.Graphics]::FromImage($bmp);"
-          "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);"
-          "$bmp.Save($env:CAIRN_SHOT,[System.Drawing.Imaging.ImageFormat]::Png);"
-          "$g.Dispose();$bmp.Dispose()")
-    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                       env={**os.environ, "CAIRN_SHOT": str(out)}, capture_output=True, text=True)
+    if sys.platform == "win32":
+        ps = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+              "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;"
+              "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
+              "$g=[System.Drawing.Graphics]::FromImage($bmp);"
+              "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);"
+              "$bmp.Save($env:CAIRN_SHOT,[System.Drawing.Imaging.ImageFormat]::Png);"
+              "$g.Dispose();$bmp.Dispose()")
+        argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps]
+    elif sys.platform == "darwin":
+        argv = ["screencapture", "-x", str(out)]
+    else:
+        tools = [("grim", ["grim", str(out)]), ("gnome-screenshot", ["gnome-screenshot", "-f", str(out)]),
+                 ("scrot", ["scrot", "-o", str(out)]), ("import", ["import", "-window", "root", str(out)])]
+        argv = next((a for t, a in tools if shutil.which(t)), None)
+        if not argv:
+            print("SHOT FAILED: no screenshot tool found. Install one of: grim, gnome-screenshot, scrot, imagemagick.")
+            return
+    if not shutil.which(argv[0]):
+        print(f"SHOT FAILED: `{argv[0]}` not found on PATH.")
+        return
+    out.unlink(missing_ok=True)
+    r = subprocess.run(argv, env={**os.environ, "CAIRN_SHOT": str(out)}, capture_output=True, text=True)
     if r.returncode or not out.exists():
         print("SHOT FAILED: " + (r.stderr or r.stdout).strip()[:300]); return
     print(out)
@@ -1080,6 +1102,9 @@ if __name__ == "__main__":
         except (AttributeError, ValueError):
             pass
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd and cmd not in ("statusline", "prompt", "session-start", "audit", "spawn", "workspace", "shot",
+                           "cleanup", "dispatch", "report", "board"):
+        print(f"Unknown command '{cmd}'.\n"); print(__doc__); sys.exit(2)
     {"statusline": cmd_statusline, "prompt": cmd_prompt,
      "session-start": cmd_session_start, "audit": cmd_audit, "spawn": cmd_spawn,
      "workspace": cmd_workspace, "shot": cmd_shot, "cleanup": cmd_cleanup,

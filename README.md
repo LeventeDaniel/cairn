@@ -72,7 +72,7 @@ claude plugin install cairn --marketplace LeventeDaniel/cairn
 
 In the desktop app, where `/plugin` does not run: click + next to the prompt box, then Plugins, Add marketplace with `LeventeDaniel/cairn`, then Add plugin.
 
-The pane and compaction help work on their own. The `SESSION.md` notes, inbox and shared thresholds come from Cairn, if you have it installed in `~/.claude/cairn/`.
+The pane and compaction help work on their own. The `SESSION.md` notes, inbox and shared thresholds come from the Cairn kit in [`kit/`](kit/README.md) (skills, agents, `cairn.py`, the CLAUDE.md block). Install it with `python install.py` from that folder; it needs only Python 3.8+.
 
 ## License
 
