@@ -536,8 +536,15 @@ def cmd_session_start():
         if dg:
             print(dg)
         write_json(CAIRN / "marks" / f"{sid}.json", {"reset_line": reset_line, "repo": "home", "home": True})
-        rows = [t for t in board_rows(refresh=False) if t["status"] in ("running", "waiting", "queued")]
-        board = "; ".join(f"{t['id']} {t['status']} '{t['title']}'" for t in rows[:12]) or "empty"
+        rows = [t for t in board_rows() if t["status"] in ("running", "waiting", "queued")]
+
+        def why(t):
+            if t["status"] != "waiting":
+                return ""
+            return (f" (needs the user: {t['waitingFor']})" if t.get("waitingFor") else
+                    " (cut off by the usage limit)" if t.get("stopped") == "rate_limit" else
+                    f" (stopped: {t['stopped']})" if t.get("stopped") else "")
+        board = "; ".join(f"{t['id']} {t['status']} '{t['title']}'{why(t)}" for t in rows[:12]) or "empty"
         print(f"[Cairn · Home] You are {HOME_TITLE}: route, never do the work (rules in this folder's CLAUDE.md, "
               f"dispatch skill for every request). Board: {board}. Repos: "
               + ", ".join(f"{r['name']} ({r['purpose']})" for r in registry()[:15]))
@@ -1118,11 +1125,21 @@ def cmd_dispatch():
     ap.add_argument("--effort", default="")
     ap.add_argument("--session", default="")
     ap.add_argument("--scope", default="", help="risky steps the user pre-approved in Home, e.g. 'install; spend<=5USD'")
+    ap.add_argument("--again", action="store_true", help="add the row even if an open one has the same title")
     a = ap.parse_args(sys.argv[2:])
     c = cfg()
     live_agents()  # slow (starts the CLI): ask before taking the lock
     with board_lock():
         b = board_refresh(board_load())
+        twin = next((x for x in b["tasks"] if x["status"] in ("running", "waiting", "queued")
+                     and same_title(x["title"], a.title[:80])), None)
+        if twin and not a.again:
+            # Seen live: the same request dispatched three times left duplicate rows under "Needs you".
+            board_save(b)
+            print(f"ALREADY ON THE BOARD: {twin['id']} '{twin['title']}' is {twin['status']}. Do NOT start another worker: "
+                  "tell the user in one line it is already there" + (f" (session {twin['session']})" if twin.get("session") else "")
+                  + ". A follow-up goes to that worker. Only if the user wants a second, separate run: repeat with --again.")
+            return
         model, effort = KINDS[a.kind]
         t = {"id": f"t{b['next']}", "repo": a.repo, "title": a.title[:80], "kind": a.kind,
              "model": a.model or model, "effort": a.effort or effort, "session": a.session,
@@ -1171,7 +1188,14 @@ def cmd_report():
             t["reportStale"] = False
         t["updated"] = time.time()
         board_save(b)
+        running = sum(1 for x in b["tasks"] if x["status"] == "running")
+        queued = sorted((x for x in b["tasks"] if x["status"] == "queued"), key=lambda x: x["started"])
     print(f"{t['id']} {t['status']}: {t['title']}" + (f" — {t['report']}" if t["report"] else ""))
+    if a.status in ("done", "closed", "waiting") and queued and running < cfg()["max_running"]:
+        # Nothing else ever started a queued task: it sat on the board until someone remembered it.
+        q = queued[0]
+        print(f"QUEUED TASK CAN START: {q['id']} '{q['title']}' ({q['model']}/{q['effort']}). Start its worker now "
+              f"(dispatch skill, step 3 on), then `cairn.py report {q['id']} --status running --session <id>`.")
 
 
 def board_rows(refresh=True):

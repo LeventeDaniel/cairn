@@ -28,7 +28,7 @@ class Match(unittest.TestCase):
         # Seen live: two duplicate rows with no session borrowed the session of the real task with the
         # same title, and all three sat under "Needs you".
         for _ in range(3):
-            run(self.m, "dispatch", "--repo", "a", "--title", "a: morning digest")
+            run(self.m, "dispatch", "--repo", "a", "--title", "a: morning digest", "--again")
         self.age(t1=900, t2=600, t3=400)
         self.m._AGENTS = [agent("u9", "a: morning digest")]
         self.m.GONE_GRACE = 0
@@ -51,7 +51,7 @@ class Match(unittest.TestCase):
 
     def test_a_duplicate_that_borrowed_the_session_id_gives_it_back(self):
         run(self.m, "dispatch", "--repo", "a", "--title", "a: digest")                          # t1, duplicate, no session
-        run(self.m, "dispatch", "--repo", "a", "--title", "a: digest", "--session", "local_real")  # t2, the real one
+        run(self.m, "dispatch", "--repo", "a", "--title", "a: digest", "--session", "local_real", "--again")  # t2, the real one
         b = json.loads(self.m.BOARD.read_text())
         b["tasks"][0].update(cliSession="u9", status="waiting", started=b["tasks"][0]["started"] - 900)
         b["tasks"][1].update(cliSession="u9")
@@ -417,6 +417,44 @@ class Inbox(unittest.TestCase):
         with mock.patch.object(self.m, "write_text_atomic", side_effect=AssertionError("rewritten")):
             self.assertEqual(self.m.registry_touch(str(repo)), ("proj", False))
         self.assertEqual(self.m.REGISTRY.stat().st_mtime_ns, before)
+
+
+class HomeFlow(unittest.TestCase):
+    def setUp(self):
+        self.m = load(Path(tempfile.mkdtemp()))
+
+    def test_the_same_task_is_not_dispatched_twice(self):
+        run(self.m, "dispatch", "--repo", "a", "--title", "a: morning digest", "--session", "local_x")
+        out = run(self.m, "dispatch", "--repo", "a", "--title", "A: Morning Digest")
+        self.assertIn("ALREADY ON THE BOARD: t1", out)
+        self.assertIn("local_x", out)
+        self.assertEqual(len(json.loads(self.m.BOARD.read_text())["tasks"]), 1)
+        self.assertIn("OK t2", run(self.m, "dispatch", "--repo", "a", "--title", "a: morning digest", "--again"))
+        run(self.m, "report", "t1", "--status", "done")
+        run(self.m, "report", "t2", "--status", "done")
+        self.assertIn("OK t3", run(self.m, "dispatch", "--repo", "a", "--title", "a: morning digest"))  # finished ones don't block
+
+    def test_a_freed_slot_names_the_queued_task_to_start(self):
+        for i in range(4):
+            out = run(self.m, "dispatch", "--repo", "a", "--title", f"a: task {i}")
+        self.assertIn("QUEUED t4", out)
+        self.assertNotIn("CAN START", run(self.m, "report", "t1", "--note", "halfway"))
+        out = run(self.m, "report", "t1", "--status", "done", "--note", "pushed")
+        self.assertIn("QUEUED TASK CAN START: t4 'a: task 3'", out)
+        run(self.m, "report", "t4", "--status", "running", "--session", "local_q")
+        self.assertNotIn("CAN START", run(self.m, "report", "t2", "--status", "done"))  # nothing queued any more
+
+    def test_home_start_line_says_what_each_open_row_needs(self):
+        self.m.HOME_DIR.mkdir(parents=True)
+        run(self.m, "dispatch", "--repo", "a", "--title", "a: one", "--session", "local_1")
+        run(self.m, "dispatch", "--repo", "a", "--title", "a: two", "--session", "local_2")
+        self.m._AGENTS = [{**agent("u1", "a: one", "waiting"), "waitingFor": "permission prompt"}, agent("u2", "a: two", "busy")]
+        run(self.m, "board")
+        run(self.m, "stop", stdin={"session_id": "u2", "hook_event_name": "StopFailure", "error": "rate_limit"})
+        self.m._AGENTS = [{**agent("u1", "a: one", "waiting"), "waitingFor": "permission prompt"}, agent("u2", "a: two", "idle")]
+        out = run(self.m, "session-start", stdin={"session_id": "h", "cwd": str(self.m.HOME_DIR), "source": "resume"})
+        self.assertIn("t1 waiting 'a: one' (needs the user: permission prompt)", out)
+        self.assertIn("t2 waiting 'a: two' (cut off by the usage limit)", out)
 
 
 if __name__ == "__main__":
