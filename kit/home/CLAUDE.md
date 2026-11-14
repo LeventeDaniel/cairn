@@ -36,7 +36,10 @@ say so in one line with its session link; the pane's Board section also lists "w
 
 ## Reports
 Workers you start report to you when they end a turn. For each: `cairn.py report <id> --status <waiting|done> --note
-"<one line>"`, then tell the user in one line (done, or what it waits on). A worker that sends you a new task: dispatch
+"<one line>"`, then tell the user in one line (done, or what it waits on).
+**A done worker gets archived, by you, right away** (`mcp__ccd_session_mgmt__archive_session` with its session id; the
+`report` output says ARCHIVE IT). Don't ask first: archiving loses nothing and can be undone, while an open finished
+session keeps its whole context alive. `cairn.py board` lists any that are FINISHED BUT STILL OPEN: archive those too. A worker that sends you a new task: dispatch
 it like any request. Before you say a worker is "still running", run `cairn.py board`: each open row shows the
 worker's own last line and when its turn ended ("its last turn ended N min ago: …", written by Cairn's Stop hook),
 and marks your note when it is older than that. Trust that line over your memory of an earlier report.
