@@ -444,6 +444,14 @@ class HomeFlow(unittest.TestCase):
         run(self.m, "report", "t4", "--status", "running", "--session", "local_q")
         self.assertNotIn("CAN START", run(self.m, "report", "t2", "--status", "done"))  # nothing queued any more
 
+    def test_cairn_home_is_not_listed_as_an_unregistered_repo(self):
+        self.m.HOME_DIR.mkdir(parents=True)
+        other = self.m.HOME / "elsewhere"
+        other.mkdir()
+        self.m._AGENTS = [{**agent("h1", "Cairn Home"), "cwd": str(self.m.HOME_DIR)},
+                          {**agent("o1", "scratch"), "cwd": str(other)}]
+        self.assertEqual([o["title"] for o in self.m.workspace()["unregistered"]], ["scratch"])
+
     def test_home_start_line_says_what_each_open_row_needs(self):
         self.m.HOME_DIR.mkdir(parents=True)
         run(self.m, "dispatch", "--repo", "a", "--title", "a: one", "--session", "local_1")

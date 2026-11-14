@@ -893,7 +893,8 @@ def workspace():
     others = [{"title": a.get("name") or (a.get("sessionId") or "")[:8], "cwd": a.get("cwd"),
                "status": a.get("status"), "kind": a.get("kind")}
               for a in agents if a.get("sessionId") not in claimed
-              and a.get("status") in ("busy", "idle", "waiting")]
+              and a.get("status") in ("busy", "idle", "waiting")
+              and not is_home(a.get("cwd"))]  # Cairn Home is not a repo that is missing from REPOS.md
     return {"at": now, "cacheTtlMin": ttl, "repos": repos, "unregistered": others}
 
 
