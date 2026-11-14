@@ -60,14 +60,31 @@ def write_json(p, data):
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(p.name + f".{os.getpid()}.tmp")
     tmp.write_text(json.dumps(data), encoding="utf-8")
-    os.replace(tmp, p)
+    replace_retry(tmp, p)
+
+
+def replace_retry(tmp, p, tries=6):
+    """os.replace, retried: on Windows it fails with PermissionError while another process has the
+    target open (several sessions write state/last.json and board.json at once)."""
+    for i in range(tries):
+        try:
+            os.replace(tmp, p)
+            return True
+        except PermissionError:
+            if i == tries - 1:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                return False  # a status-line or hook run must not crash over a state file
+            time.sleep(0.03 * (i + 1))
 
 
 def write_text_atomic(p, text):
     p = Path(p)
     tmp = p.with_name(p.name + f".{os.getpid()}.tmp")
     tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, p)
+    replace_retry(tmp, p)
 
 
 def safe_id(s):
@@ -88,6 +105,8 @@ def cmd_statusline():
         "window": cw.get("context_window_size"),
         "five_hour": (rl.get("five_hour") or {}).get("used_percentage"),
         "seven_day": (rl.get("seven_day") or {}).get("used_percentage"),
+        "five_hour_resets": (rl.get("five_hour") or {}).get("resets_at"),
+        "seven_day_resets": (rl.get("seven_day") or {}).get("resets_at"),
         "model": (d.get("model") or {}).get("display_name"),
     }
     sid = safe_id(d.get("session_id"))
@@ -182,7 +201,10 @@ def topic_shift(prompt, cwd):
     if len(pw) < 6 or prompt.lstrip().startswith(("[", "<", "/")):
         return ""
     try:
-        t = (Path(project_root(str(cwd))) / "SESSION.md").read_text(encoding="utf-8", errors="replace")
+        # The same file session-start restores: this checkout's own. In a git worktree the main
+        # checkout's SESSION.md is another task's goal, and comparing against it told workers that
+        # their own task was "a new task, don't do it here".
+        t = session_file(cwd).read_text(encoding="utf-8", errors="replace")
     except (OSError, TypeError):
         return ""
     goal = re.search(r"##\s*Goal[^\n]*\n+([^\n]+)", t)
@@ -191,6 +213,11 @@ def topic_shift(prompt, cwd):
         return ""
     known = words(goal.group(1) + " " + (nxt.group(1) if nxt else ""))
     return goal.group(1).strip() if known and not (pw & known) else ""
+
+
+def session_file(cwd):
+    """SESSION.md of the folder this session runs in (a git worktree has its own)."""
+    return Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd) / "SESSION.md"
 
 
 def watcher_mode():
@@ -252,6 +279,11 @@ def cmd_prompt():
         notes.append(f"{tools} tool results are in context since the last reset. Send further searching, "
                      "file/log reading or research to the scout or researcher subagent.")
     fh, sd = st.get("five_hour"), st.get("seven_day")
+    now = time.time()  # a saved percentage from before the window reset says nothing about now
+    if st.get("five_hour_resets") and now > st["five_hour_resets"]:
+        fh = None
+    if st.get("seven_day_resets") and now > st["seven_day_resets"]:
+        sd = None
     if (fh or 0) >= c["usage_warn"] or (sd or 0) >= c["usage_warn"]:
         notes.append(f"Plan usage is high (5h {fh or 0:.0f}%, 7d {sd or 0:.0f}%). Prefer haiku/sonnet "
                      "subagents and low effort; suggest a smaller main model with /model in one line.")
@@ -453,7 +485,7 @@ def cmd_session_start():
     cwd = d.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     out = []
     dg = ""
-    sess = Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd) / "SESSION.md"
+    sess = session_file(cwd)
     if sess.exists():
         out.append("[Cairn] Saved working state from SESSION.md is below. If the user's first message "
                    "starts with '[Started by Cairn', IGNORE it (it belongs to another session). If the user's "
@@ -838,22 +870,82 @@ def board_find(b, key):
     return None
 
 
+class board_lock:
+    """Short cross-process lock for a read-change-write of board.json. Home's `report`, the pane's
+    `workspace` refresh and the session-start hook all write it; without this the slower one overwrote
+    the other's change. Never blocks for long: after 5 s it goes on without the lock."""
+
+    def __enter__(self):
+        self.path, self.held = BOARD.with_name("board.lock"), False
+        end = time.time() + 5
+        while True:
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                os.close(os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+                self.held = True
+                return self
+            except FileExistsError:
+                try:
+                    if time.time() - self.path.stat().st_mtime > 30:  # left behind by a killed process
+                        self.path.unlink()
+                        continue
+                except OSError:
+                    pass
+            except OSError:
+                return self
+            if time.time() > end:
+                return self
+            time.sleep(0.05)
+
+    def __exit__(self, *exc):
+        if self.held:
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
+
+
+AGENT_NAME_MAX = 40  # `claude agents` cuts session names to 40 characters
+
+
+def same_title(agent_name, title):
+    a, t = (agent_name or "").strip().lower(), (title or "").strip().lower()
+    return bool(a) and (a == t or (len(t) > AGENT_NAME_MAX and a == t[:AGENT_NAME_MAX].strip()))
+
+
 def board_refresh(b, agents=None):
     """Live status from `claude agents`: busy → running, idle/waiting → waiting (on you); gone → closed.
-    A desktop session's local_ id isn't the CLI session id, so match by id, else by title."""
+    A desktop session's local_ id isn't the CLI session id, so match by id, else by title. One live
+    session belongs to one task: a duplicate or queued task with the same title can't borrow it."""
     agents = live_agents() if agents is None else agents
     if not agents:
         return b  # no CLI or no answer: keep what we have rather than mark everything closed
+    by_id = {x.get("sessionId"): x for x in agents if x.get("sessionId")}
+    match, claimed = {}, set()
+    for t in b["tasks"]:  # by id first; finished tasks keep their session too
+        for sid in (t.get("cliSession"), (t.get("session") or "").replace("local_", "")):
+            if sid and sid in by_id and sid not in claimed:
+                match[t["id"]] = by_id[sid]
+                claimed.add(sid)
+                break
+
+    def final(t):
+        return t["status"] in ("done", "queued") or (t["status"] == "closed" and t.get("closedBy") == "report")
+
+    for t in sorted(b["tasks"], key=lambda t: -t["started"]):  # then by title, newest task first
+        if t["id"] in match or final(t):
+            continue
+        same = [x for x in agents if x.get("sessionId") not in claimed and same_title(x.get("name"), t["title"])
+                and (x.get("startedAt") or 0) / 1000 >= t["started"] - 120]
+        if same:
+            match[t["id"]] = max(same, key=lambda x: x.get("startedAt") or 0)
+            claimed.add(match[t["id"]].get("sessionId"))
     for t in b["tasks"]:
-        if t["status"] in ("done", "queued") or (t["status"] == "closed" and t.get("closedBy") == "report"):
+        if final(t):
             continue  # an explicit close is final; only an auto-close (session gone) may come back
-        sid = (t.get("session") or "").replace("local_", "")
-        a = next((x for x in agents if sid and x.get("sessionId") == sid), None)
+        a = match.get(t["id"])
         if a is None:
-            same = [x for x in agents if (x.get("name") or "").strip().lower() == t["title"].strip().lower()
-                    and (x.get("startedAt") or 0) / 1000 >= t["started"] - 120]
-            a = max(same, key=lambda x: x.get("startedAt") or 0) if same else None
-        if a is None:
+            t.pop("cliSession", None)
             if t["status"] != "closed" and time.time() - t["started"] > 300:
                 t["status"] = "closed"
             continue
@@ -886,19 +978,21 @@ def cmd_dispatch():
     ap.add_argument("--scope", default="", help="risky steps the user pre-approved in Home, e.g. 'install; spend<=5USD'")
     a = ap.parse_args(sys.argv[2:])
     c = cfg()
-    b = board_refresh(board_load())
-    model, effort = KINDS[a.kind]
-    t = {"id": f"t{b['next']}", "repo": a.repo, "title": a.title[:80], "kind": a.kind,
-         "model": a.model or model, "effort": a.effort or effort, "session": a.session,
-         "status": "running", "started": time.time(), "updated": time.time(), "report": ""}
-    if a.scope:
-        t["scope"] = a.scope[:200]
-    running = [x for x in b["tasks"] if x["status"] == "running"]
-    if len(running) >= c["max_running"] and a.kind != "cloud":
-        t["status"] = "queued"
-    b["next"] += 1
-    b["tasks"].append(t)
-    board_save(b)
+    live_agents()  # slow (starts the CLI): ask before taking the lock
+    with board_lock():
+        b = board_refresh(board_load())
+        model, effort = KINDS[a.kind]
+        t = {"id": f"t{b['next']}", "repo": a.repo, "title": a.title[:80], "kind": a.kind,
+             "model": a.model or model, "effort": a.effort or effort, "session": a.session,
+             "status": "running", "started": time.time(), "updated": time.time(), "report": ""}
+        if a.scope:
+            t["scope"] = a.scope[:200]
+        running = [x for x in b["tasks"] if x["status"] == "running"]
+        if len(running) >= c["max_running"] and a.kind != "cloud":
+            t["status"] = "queued"
+        b["next"] += 1
+        b["tasks"].append(t)
+        board_save(b)
     if t["status"] == "queued":
         print(f"QUEUED {t['id']}: {len(running)} workers already running (cap {c['max_running']}). Do NOT start it now; "
               f"tell the user in one line it's queued behind: " + "; ".join(x['title'] for x in running) +
@@ -916,30 +1010,35 @@ def cmd_report():
     ap.add_argument("--session", default="")
     ap.add_argument("--note", default="", help="one-line report")
     a = ap.parse_args(sys.argv[2:])
-    b = board_load()
-    t = board_find(b, a.key)
-    if not t:
-        sys.exit(f"No board task '{a.key}'. `cairn.py board` lists them.")
-    if a.session:
-        t["session"] = a.session
-    if a.status:
-        t["status"] = a.status
-        if a.status == "closed":
-            t["closedBy"] = "report"
-        else:
-            t.pop("closedBy", None)
-    if a.note:
-        t["report"] = a.note.replace("\n", " ")[:200]
-    t["updated"] = time.time()
-    board_save(b)
+    with board_lock():
+        b = board_load()
+        t = board_find(b, a.key)
+        if not t:
+            sys.exit(f"No board task '{a.key}'. `cairn.py board` lists them.")
+        if a.session and a.session != t.get("session"):
+            t["session"] = a.session
+            t.pop("cliSession", None)  # a new session: match it afresh
+        if a.status:
+            t["status"] = a.status
+            if a.status == "closed":
+                t["closedBy"] = "report"
+            else:
+                t.pop("closedBy", None)
+        if a.note:
+            t["report"] = a.note.replace("\n", " ")[:200]
+            t["reportStale"] = False
+        t["updated"] = time.time()
+        board_save(b)
     print(f"{t['id']} {t['status']}: {t['title']}" + (f" — {t['report']}" if t["report"] else ""))
 
 
 def board_rows(refresh=True):
     b = board_load()
     if refresh and any(t["status"] in ("running", "waiting") for t in b["tasks"]):
-        b = board_refresh(b)
-        board_save(b)
+        live_agents()  # slow (starts the CLI): ask first, then read-change-write the board in one short step
+        with board_lock():
+            b = board_refresh(board_load())
+            board_save(b)
     order = {"waiting": 0, "running": 1, "queued": 2, "done": 3, "closed": 4}
     return sorted(b["tasks"], key=lambda t: (order.get(t["status"], 5), -t["started"]))
 

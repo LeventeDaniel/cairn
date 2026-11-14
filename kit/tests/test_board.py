@@ -1,5 +1,5 @@
 """Checks for cairn.py dispatch / report / board and the Home/worker hooks. Run: python -m unittest tests/test_board.py"""
-import importlib.util, io, json, sys, tempfile, time, unittest
+import importlib.util, io, json, os, subprocess, sys, tempfile, time, unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -10,6 +10,7 @@ spec = importlib.util.spec_from_file_location("cairn", HERE / "cairn.py")
 def load(tmp):
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
+    os.environ.pop("CLAUDE_PROJECT_DIR", None)  # set when the tests run inside a Claude session
     m.HOME = tmp
     m.CAIRN = tmp / "cairn"
     m.BOARD = m.CAIRN / "board.json"
@@ -138,6 +139,31 @@ class Hooks(unittest.TestCase):
         self.assertIn("SendMessage", out)
         self.assertIn("Cairn Home", out)
 
+    def test_worker_in_a_worktree_is_not_judged_by_the_main_checkouts_goal(self):
+        git = lambda *a, cwd: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *a],
+                                             cwd=cwd, capture_output=True, text=True)
+        git("init", "-q", cwd=self.repo)
+        git("commit", "-q", "--allow-empty", "-m", "init", cwd=self.repo)
+        wt = self.tmp / "wt"
+        if git("worktree", "add", "-q", str(wt), cwd=self.repo).returncode:
+            self.skipTest("git worktree not available")
+        run(self.m, "dispatch", "--repo", "example-a", "--title", "example-a: banner", "--session", "local_w2")
+        text = "also please redesign the marketing website header banner colours today"
+        self.assertNotIn("new task", self.prompt("w2", wt, text))  # no SESSION.md of its own: nothing to compare
+        (wt / "SESSION.md").write_text("## Goal\nRedesign the marketing website banner\n")
+        self.assertNotIn("new task", self.prompt("w2", wt, text))
+        self.assertIn("SendMessage", self.prompt("w2", wt, "now go and rewrite the payroll importer with proper retries everywhere"))
+
+    def test_plan_usage_from_before_the_reset_is_not_reported(self):
+        st = self.m.CAIRN / "state" / "u1.json"
+        st.parent.mkdir(parents=True)
+        base = {"t": time.time(), "pct": 5, "five_hour": 91, "seven_day": 20}
+        st.write_text(json.dumps({**base, "five_hour_resets": time.time() - 60}))
+        self.assertNotIn("Plan usage", self.prompt("u1", self.repo, "carry on"))
+        st.write_text(json.dumps({**base, "five_hour_resets": time.time() + 600}))
+        (self.m.CAIRN / "nag" / "u1.json").unlink()
+        self.assertIn("Plan usage is high", self.prompt("u1", self.repo, "carry on"))
+
     def test_non_worker_low_context_says_nothing_about_home(self):
         out = self.prompt("other", self.repo, "also please redesign the marketing website header banner colours today")
         self.assertNotIn("Cairn Home", out)
@@ -155,10 +181,6 @@ class Hooks(unittest.TestCase):
         out = run(self.m, "session-start", stdin={"session_id": "s1", "cwd": str(scratch), "source": "startup"})
         self.assertNotIn("New repo", out)
         self.assertFalse(self.m.REGISTRY.exists() and scratch.name in self.m.REGISTRY.read_text())
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class Scope(unittest.TestCase):
@@ -201,3 +223,7 @@ class Digest(unittest.TestCase):
         self.assertNotIn("Morning digest", self.start("resume"))
         self.assertIn("Morning digest", self.start())
         self.assertNotIn("Morning digest", self.start())
+
+
+if __name__ == "__main__":
+    unittest.main()
