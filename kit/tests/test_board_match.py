@@ -465,5 +465,63 @@ class HomeFlow(unittest.TestCase):
         self.assertIn("t2 waiting 'a: two' (cut off by the usage limit)", out)
 
 
+class PutAway(unittest.TestCase):
+    """Finished workers get archived instead of piling up with their context alive."""
+
+    def setUp(self):
+        self.m = load(Path(tempfile.mkdtemp()))
+        run(self.m, "dispatch", "--repo", "a", "--title", "a: job", "--session", "local_j")
+        self.m._AGENTS = [agent("u1", "a: job", "busy")]
+        run(self.m, "board")
+
+    def test_report_done_says_archive_it(self):
+        self.assertNotIn("ARCHIVE", run(self.m, "report", "t1", "--note", "halfway"))
+        out = run(self.m, "report", "t1", "--status", "done", "--note", "pushed")
+        self.assertIn("ARCHIVE IT", out)
+        self.assertIn("local_j", out)
+        self.assertNotIn("ARCHIVE", run(self.m, "report", "t1", "--status", "waiting", "--note", "needs OK"))
+
+    def test_board_lists_finished_workers_whose_session_is_still_open(self):
+        run(self.m, "report", "t1", "--status", "done")
+        self.m._AGENTS = [agent("u1", "a: job", "idle")]
+        out = run(self.m, "board")
+        self.assertIn("FINISHED BUT STILL OPEN (1): t1 'a: job' local_j", out)
+        self.assertIn("archive_session", out)
+        self.m._AGENTS = [agent("zz", "someone else")]   # archived: its session is gone
+        self.assertNotIn("STILL OPEN", run(self.m, "board"))
+        dead = agent("u1", "a: job", "idle")
+        del dead["status"]                               # listed by --all without a live process
+        self.m._AGENTS = [dead]
+        self.assertNotIn("STILL OPEN", run(self.m, "board"))
+
+    def test_home_start_line_names_them(self):
+        self.m.HOME_DIR.mkdir(parents=True)
+        run(self.m, "report", "t1", "--status", "done")
+        self.m._AGENTS = [agent("u1", "a: job", "idle")]
+        out = run(self.m, "session-start", stdin={"session_id": "h", "cwd": str(self.m.HOME_DIR), "source": "startup"})
+        self.assertIn("Finished but still open (1): t1 local_j", out)
+
+
+class Levels(unittest.TestCase):
+    """warn / urgent by share of the window or by tokens, whichever comes first."""
+
+    def test_a_1m_window_warns_by_tokens_long_before_50_percent(self):
+        m = load(Path(tempfile.mkdtemp()))
+        c = m.cfg()
+        self.assertEqual([m.ctx_level(p, 1000000, c) for p in (10, 19, 20, 39, 40, 75)], [0, 0, 1, 1, 2, 2])
+        self.assertEqual([m.ctx_level(p, 200000, c) for p in (20, 49, 50, 69, 70)], [0, 0, 1, 1, 2])   # small window: the % rules
+        self.assertEqual(m.ctx_level(None, 1000000, c), 0)
+        self.assertEqual(m.ctx_level(45, 1000000, {**c, "warn_tokens": 0, "urgent_tokens": 0}), 0)       # switched off
+
+    def test_the_prompt_note_names_the_tokens(self):
+        m = load(Path(tempfile.mkdtemp()))
+        st = m.CAIRN / "state" / "s1.json"
+        st.parent.mkdir(parents=True)
+        st.write_text(json.dumps({"t": time.time(), "pct": 42, "window": 1000000}))
+        out = run(m, "prompt", stdin={"session_id": "s1", "cwd": str(m.HOME), "prompt": "go", "transcript_path": ""})
+        self.assertIn("Context is at 42% (420k tokens)", out)
+        self.assertIn("handoff", out)
+
+
 if __name__ == "__main__":
     unittest.main()

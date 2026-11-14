@@ -9,10 +9,15 @@ const BAND = {
   },
 } as const
 
+const PCT_ONLY = {
+  compact_soft_tokens: 0, compact_at_tokens: 0, compact_hard_tokens: 0,
+  home_compact_soft_tokens: 0, home_compact_at_tokens: 0, home_compact_hard_tokens: 0,
+}
+
 type Seen = { compacts: number; toasts: string[]; release: () => void; releaseCache: () => void; stored: Record<string, unknown> }
 
 /** An engine at `percent` context; long timers (the idle one) wait for `seen.release()`. */
-function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; cwd?: string; failCompact?: boolean; board?: unknown } = {}): Seen {
+function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; cwd?: string; failCompact?: boolean; board?: unknown; cfg?: object } = {}): Seen {
   const seen: Seen = { compacts: 0, toasts: [], release: () => {}, releaseCache: () => {}, stored: {} }
   const gate = new Promise<void>(r => { seen.release = r })
   const cacheGate = new Promise<void>(r => { seen.releaseCache = r })
@@ -26,7 +31,11 @@ function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; c
   on('session.cwd', () => ({ value: opt.cwd ?? 'C:/r/example-a' }))
   on('session.usage', () => ({ value: {
     startedAt: 0, context: { tokens: percent * 10000, window: 1000000, percent }, rateLimits: [] } }))
-  on('fs.read', (_: any, e: any) => ({ value: opt.board && String(e.path).endsWith('board.json') ? JSON.stringify(opt.board) : '{}' }))
+  // These tests are about the percentage steps (the test window is 1M tokens, so 50% is 500k): the token
+  // steps are switched off unless a test passes its own config.
+  const config = JSON.stringify(opt.cfg ?? PCT_ONLY)
+  on('fs.read', (_: any, e: any) => ({ value: opt.board && String(e.path).endsWith('board.json') ? JSON.stringify(opt.board)
+    : String(e.path).endsWith('config.json') ? config : '{}' }))
   on('fs.list', () => ({ value: [] }))
   on('fs.write', () => ({ value: undefined }))
   on('ui.toast', (_: any, e: any) => { seen.toasts.push(e.text); return { value: undefined } })
@@ -321,4 +330,64 @@ test('a worker whose task is still open is compacted as before', async ($, on) =
   seen.release()
   await settle()
   expect(seen.compacts).toBe(1)
+})
+
+// ---- token steps (the defaults): a 1M-token window must not wait for 40% = 400k tokens
+test('on a 1M window a finished task at 150k tokens is offered, and runs if nobody answers', async ($, on) => {
+  const seen = engine(on, 15, { cfg: {} })   // 150k of 1M: 15%, far below compact_soft 40%
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' } as any))
+  await settle()
+  expect(seen.compacts).toBe(0)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect((await ui.find({ type: 'Text', text: /good moment to compact/ }))?.text).toContain('task wrapped up')
+  await ui.unmount()
+  seen.release()               // idle_minutes pass with no new turn
+  await settle()
+  expect(seen.compacts).toBe(1)
+})
+
+test('on a 1M window a commit at 250k tokens compacts right away, a calm stop is offered', async ($, on) => {
+  const seen = engine(on, 25, { cfg: {} })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'Read', file_path: 'C:/a.ts' } as any))
+  await settle()
+  expect(seen.compacts).toBe(0)   // nothing finished: an offer, not a compaction
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect((await ui.find({ type: 'Text', text: /good moment to compact/ }))?.text).toContain('a calm point')
+  await ui.unmount()
+  await turn($, () => $.tool.call({ tool: 'Bash', command: 'git commit -m x' } as any))
+  await settle()
+  expect(seen.compacts).toBe(1)
+})
+
+test('on a 1M window 420k tokens compacts at the turn end even mid-task', async ($, on) => {
+  const seen = engine(on, 42, { cfg: {} })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'Bash', command: 'npm test' } as any))   // fails: an open failure
+  await settle()
+  expect(seen.compacts).toBe(1)
+})
+
+test('below 100k tokens a finished task is left alone', async ($, on) => {
+  const seen = engine(on, 8, { cfg: {} })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' } as any))
+  await settle()
+  seen.release()
+  await settle()
+  expect(seen.compacts).toBe(0)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect(await ui.find({ type: 'Text', text: /good moment/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('Cairn Home is compacted from 50k tokens, not from 15% of a 1M window', async ($, on) => {
+  const seen = engine(on, 6, { cfg: {}, cwd: 'C:/Users/me/.claude/cairn/home' })   // 60k tokens
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' } as any))
+  await settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect(await ui.find({ type: 'Text', text: /good moment to compact/ })).toBeDefined()
+  await ui.unmount()
 })

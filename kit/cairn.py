@@ -32,7 +32,11 @@ CFG = CAIRN / "config.json"
 DEFAULTS = {"warn": 50, "urgent": 70, "tool_results": 40, "usage_warn": 80,
             "repeat_every": 8, "max_spawns_per_day": 6, "repos_dir": "~/Projects",
             "prune_days": 30, "workspace_days": 14, "stale_days": 14, "shift_pct": 30,
-            "max_running": 3, "board_keep_days": 7}
+            "max_running": 3, "board_keep_days": 7,
+            # warn / urgent as token counts too, whichever comes first: on a 1M-token window 50% and 70%
+            # are 500k and 700k tokens, far past the point where every reply is expensive. They match the
+            # mod's compact_at_tokens / compact_hard_tokens. 0 = percentage only.
+            "warn_tokens": 200000, "urgent_tokens": 400000}
 BOARD = CAIRN / "board.json"
 HOME_DIR = CAIRN / "home"
 HOME_TITLE = "Cairn Home"
@@ -119,7 +123,8 @@ def cmd_statusline():
     pct = state["pct"]
     parts = [f"[{state['model'] or '?'}]"]
     if pct is not None:
-        flag = " ⚠ clear soon" if pct >= c["urgent"] else (" ●" if pct >= c["warn"] else "")
+        lvl = ctx_level(pct, state["window"], c)
+        flag = " ⚠ clear soon" if lvl == 2 else (" ●" if lvl == 1 else "")
         parts.append(f"{pct:.0f}% ctx{flag}")
     if state["five_hour"] is not None:
         parts.append(f"5h {state['five_hour']:.0f}%")
@@ -137,6 +142,18 @@ def cmd_statusline():
         except (OSError, subprocess.SubprocessError):
             pass
     print(line)
+
+
+def ctx_level(pct, window, c):
+    """0 fine, 1 warn, 2 urgent: by share of the window or by token count, whichever comes first."""
+    if pct is None:
+        return 0
+    tokens = pct * (window or 0) / 100
+    if pct >= c["urgent"] or (c.get("urgent_tokens") and tokens >= c["urgent_tokens"]):
+        return 2
+    if pct >= c["warn"] or (c.get("warn_tokens") and tokens >= c["warn_tokens"]):
+        return 1
+    return 0
 
 
 # ---------------------------------------------------------------- transcript
@@ -256,20 +273,21 @@ def cmd_prompt():
     if pct is None:
         pct = 0
 
-    level = 2 if pct >= c["urgent"] else (1 if pct >= c["warn"] else 0)
+    level = ctx_level(pct, window, c)
+    pct_txt = f"{pct:.0f}%" + (f" ({pct * window / 100000:.0f}k tokens)" if window else "")
     notes = []
     # With the cairn mod compacting at clean breaks, "/clear" advice would contradict it.
     watcher = st.get("via") == "cairn" and watcher_mode() != "off"
     if watcher:
         if level == 2:
-            notes.append(f"Context is {pct:.0f}% full. cairn compacts at the end of this turn with Cairn's notes; "
+            notes.append(f"Context is at {pct_txt}. cairn compacts at the end of this turn with Cairn's notes; "
                          "if SESSION.md is stale, run the handoff skill first. No /clear needed.")
     elif level == 2:
-        notes.append(f"Context is {pct:.0f}% full. Do this now, before the user's request: run the "
+        notes.append(f"Context is at {pct_txt}. Do this now, before the user's request: run the "
                      "handoff skill yourself to save state to SESSION.md, then tell the user in one line "
                      "to type /clear (their state will reload automatically).")
     elif level == 1:
-        notes.append(f"Context is {pct:.0f}% full. At the next natural stopping point, run the handoff "
+        notes.append(f"Context is at {pct_txt}. At the next natural stopping point, run the handoff "
                      "skill yourself and suggest /clear in one line.")
     cwd = d.get("cwd") or os.getcwd()
     home = is_home(cwd)
@@ -545,6 +563,10 @@ def cmd_session_start():
                     " (cut off by the usage limit)" if t.get("stopped") == "rate_limit" else
                     f" (stopped: {t['stopped']})" if t.get("stopped") else "")
         board = "; ".join(f"{t['id']} {t['status']} '{t['title']}'{why(t)}" for t in rows[:12]) or "empty"
+        left = still_open(board_rows(refresh=False))
+        if left:
+            board += (f". Finished but still open ({len(left)}): " + ", ".join(
+                f"{t['id']} {t.get('session') or ''}".strip() for t in left[:12]) + ". " + ARCHIVE_HOW)
         print(f"[Cairn · Home] You are {HOME_TITLE}: route, never do the work (rules in this folder's CLAUDE.md, "
               f"dispatch skill for every request). Board: {board}. Repos: "
               + ", ".join(f"{r['name']} ({r['purpose']})" for r in registry()[:15]))
@@ -1068,7 +1090,15 @@ def board_refresh(b, agents=None):
             claimed.add(match[t["id"]].get("sessionId"))
     for t in b["tasks"]:
         if final(t):
-            continue  # an explicit close is final; only an auto-close (session gone) may come back
+            # an explicit close is final; only an auto-close (session gone) may come back.
+            # A finished task whose session still runs is a session nobody put away: the board says so.
+            a = match.get(t["id"])
+            if t["status"] in ("done", "closed") and a is not None and a.get("status") is not None:
+                t["open"] = True
+            else:
+                t.pop("open", None)
+            continue
+        t.pop("open", None)
         a = match.get(t["id"])
         now = time.time()
         # `status` (and `pid`) exist only while the session's process is alive; a background session also has
@@ -1192,6 +1222,12 @@ def cmd_report():
         running = sum(1 for x in b["tasks"] if x["status"] == "running")
         queued = sorted((x for x in b["tasks"] if x["status"] == "queued"), key=lambda x: x["started"])
     print(f"{t['id']} {t['status']}: {t['title']}" + (f" — {t['report']}" if t["report"] else ""))
+    if a.status == "done" and t.get("session"):
+        # A finished worker left open kept its whole context alive: it was compacted while idle, woke with
+        # every app restart and filled the sidebar. Nobody else puts it away.
+        print(f"ARCHIVE IT: the task is done, so archive its session {t['session']} now with the app's archive tool "
+              "(mcp__ccd_session_mgmt__archive_session); it can be unarchived any time. Skip only if the user is still "
+              "using that session. Mention 'archived' in your one-line reply.")
     if a.status in ("done", "closed", "waiting") and queued and running < cfg()["max_running"]:
         # Nothing else ever started a queued task: it sat on the board until someone remembered it.
         q = queued[0]
@@ -1202,14 +1238,23 @@ def cmd_report():
 def board_rows(refresh=True):
     b = board_load()
     # also for auto-closed rows: their session may be back (resumed, or the CLI's last answer was short)
-    if refresh and any(t["status"] in ("running", "waiting") or (t["status"] == "closed" and t.get("closedBy") != "report")
-                       for t in b["tasks"]):
+    # (finished rows too: whether their session is still open is part of the picture)
+    if refresh and any(t["status"] != "queued" for t in b["tasks"]):
         live_agents()  # slow (starts the CLI): ask first, then read-change-write the board in one short step
         with board_lock():
             b = board_refresh(board_load())
             board_save(b)
     order = {"waiting": 0, "running": 1, "queued": 2, "done": 3, "closed": 4}
     return sorted(b["tasks"], key=lambda t: (order.get(t["status"], 5), -t["started"]))
+
+
+def still_open(rows):
+    """Finished board rows whose worker session is still open (nobody archived it)."""
+    return [t for t in rows if t.get("open") and t["status"] in ("done", "closed")]
+
+
+ARCHIVE_HOW = ("Archive them now with the app's archive tool (mcp__ccd_session_mgmt__archive_session, one call per session id); "
+               "an archived session can be unarchived any time, nothing is lost. Skip one only if the user is still using it.")
 
 
 def cmd_board():
@@ -1220,6 +1265,11 @@ def cmd_board():
     if not rows:
         print("Board is empty.")
         return
+    left = still_open(rows)
+    if left:
+        print(f"FINISHED BUT STILL OPEN ({len(left)}): " + "; ".join(
+            f"{t['id']} '{t['title']}'" + (f" {t['session']}" if t.get("session") else "") for t in left[:12])
+            + ". " + ARCHIVE_HOW)
     mark = {"running": "●", "waiting": "!", "queued": "…", "done": "✓", "closed": "○"}
     for t in rows:
         age = round((time.time() - t["started"]) / 60)

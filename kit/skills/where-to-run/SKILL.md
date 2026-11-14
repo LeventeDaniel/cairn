@@ -14,6 +14,8 @@ Answer in plain words, recommend ONE option first, then one line on the runner-u
 - **Agent teams** (experimental) — sessions that message each other and share a task list. Costly; only for big coordinated builds.
 - **Scheduled tasks** — cloud scheduled tasks (formerly routines) run without the computer and belong to the signed-in account; desktop scheduled tasks run locally and need the app open and the computer awake.
 
+Finished sessions: archive them (the Code tab's archive action; Cairn Home archives its workers itself). An open finished session keeps its context alive for nothing.
+
 ## Quick decision
 1. Needs this computer's files/tools/secrets? → local (+ Remote Control to follow from the phone, background session for parallel work).
 2. Otherwise, long or unattended, or several at once? → cloud session; a stream of related tasks → Claude Code Project.

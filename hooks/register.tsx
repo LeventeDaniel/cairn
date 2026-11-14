@@ -19,6 +19,13 @@ const DEFAULTS = {
   compact_soft: 40,    // % from which a finished task is a reason to compact
   compact_at: 60,      // % from which any calm turn end is
   compact_hard: 72,    // % at which Cairn compacts at the next turn end, mid-task or not
+  // The same three steps as token counts; whichever comes first applies (0 = percentage only).
+  // On a 1M-token window the percentages alone mean 400k / 600k / 720k tokens: measured on
+  // 2026-11-14, 65 of 66 sessions never got past 20% (90-200k tokens), so nothing was ever
+  // compacted, while every reply re-read all of it.
+  compact_soft_tokens: 100000,
+  compact_at_tokens: 200000,
+  compact_hard_tokens: 400000,
   idle_minutes: 3,     // an offer nobody answered runs after this long with no new prompt
   trim_over: 4000,     // tool results longer than this (chars) are trimmed before summarizing
   trim_keep: 800,      // chars kept from a trimmed result (head + tail)
@@ -31,6 +38,9 @@ const DEFAULTS = {
   home_compact_soft: 15,
   home_compact_at: 25,
   home_compact_hard: 50,
+  home_compact_soft_tokens: 50000,
+  home_compact_at_tokens: 80000,
+  home_compact_hard_tokens: 150000,
   ...LEDGER_DEFAULTS,
 }
 type Cfg = typeof DEFAULTS
@@ -125,7 +135,23 @@ async function loadCfg($: EngineInterface, home: string) {
     cfg = { ...DEFAULTS, ...ttl }
   }
   if (await inHome($, home)) {
-    cfg = { ...cfg, compact_soft: cfg.home_compact_soft, compact_at: cfg.home_compact_at, compact_hard: cfg.home_compact_hard }
+    cfg = {
+      ...cfg, compact_soft: cfg.home_compact_soft, compact_at: cfg.home_compact_at, compact_hard: cfg.home_compact_hard,
+      compact_soft_tokens: cfg.home_compact_soft_tokens, compact_at_tokens: cfg.home_compact_at_tokens,
+      compact_hard_tokens: cfg.home_compact_hard_tokens,
+    }
+  }
+}
+
+/** The three compaction steps as percentages of this window: the configured %, or the token count if that comes first. */
+export function steps(c: Cfg, window: number): Cfg {
+  if (!(window > 0)) return c
+  const first = (pct: number, tokens: number) => (tokens > 0 ? Math.min(pct, (tokens / window) * 100) : pct)
+  return {
+    ...c,
+    compact_soft: first(c.compact_soft, c.compact_soft_tokens),
+    compact_at: first(c.compact_at, c.compact_at_tokens),
+    compact_hard: first(c.compact_hard, c.compact_hard_tokens),
   }
 }
 
@@ -400,7 +426,8 @@ async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'ra
   const home = await cairnHome($)
   await loadCfg($, home)
   const p = u.context.percent
-  const level = p === undefined ? 0 : p >= cfg.urgent ? 2 : p >= cfg.warn ? 1 : 0
+  const eff = steps(cfg, u.context.window)
+  const level = p === undefined ? 0 : p >= Math.min(cfg.urgent, eff.compact_hard) ? 2 : p >= Math.min(cfg.warn, eff.compact_at) ? 1 : 0
   const s: Snap = {
     percent: p,
     tokens: u.context.tokens,
@@ -464,7 +491,7 @@ function verdict(p: number, mode: Cfg['compact_mode'], c: Cfg, done: string, ope
   snoozed: number): { act: 'now' | 'offer' | 'wait'; reason: string } {
   const wait = { act: 'wait' as const, reason: '' }
   if (mode === 'off' || p < c.compact_soft) return wait
-  if (mode === 'auto') return p >= c.compact_at ? { act: 'now', reason: `context past ${c.compact_at}%` } : wait
+  if (mode === 'auto') return p >= c.compact_at ? { act: 'now', reason: `context past ${c.compact_at.toFixed(0)}%` } : wait
   if (p >= c.compact_hard) {
     return mode === 'ask' ? { act: 'offer', reason: `context ${p.toFixed(0)}%, near the limit` }
       : { act: 'now', reason: `context ${p.toFixed(0)}%, before auto-compact cuts in mid-task` }
@@ -481,13 +508,15 @@ async function decide($: EngineInterface) {
   const done = turnDone
   turnDone = ''
   if (pending || compacting) return
-  const p = (await read($, snap)).percent
+  const now0 = await read($, snap)
+  const p = now0.percent
   if (p === undefined) return
+  const eff = steps(cfg, now0.window)
   // Finished work closes the failures left from earlier: a command that failed
   // once (a stray ls, a probe) must not hold back every later offer.
   if (done) await update($, work, x => ({ ...x, fails: [] }))
   const w = await read($, work)
-  const v = verdict(p, cfg.compact_mode, cfg, done, w.fails.length, snoozedTo)
+  const v = verdict(p, cfg.compact_mode, eff, done, w.fails.length, snoozedTo)
   try {
     // The last decision, for anyone checking why Cairn did or didn't compact.
     await $.fs.write(`${await cairnHome($)}/cairn/state/compact-decision.json`, JSON.stringify({
@@ -868,7 +897,11 @@ export const register: Register = on => {
             ? <Text dimColor>No reading yet (fills in after the first reply).</Text>
             : <Text color={color}>{'█'.repeat(filled)}{'░'.repeat(width - filled)} {p.toFixed(0)}%</Text>}
           {s.tokens !== undefined && s.window > 0 &&
-            <Text dimColor>{k(s.tokens)} of {k(s.window)} tokens · compact {cfg.compact_mode}: done-task {cfg.compact_soft}% · calm {cfg.compact_at}% · hard {cfg.compact_hard}%</Text>}
+            <Text dimColor>{k(s.tokens)} of {k(s.window)} tokens · compact {cfg.compact_mode}: {(() => {
+              const e = steps(cfg, s.window)
+              const at = (pct: number) => `${k((pct / 100) * s.window)} (${pct.toFixed(0)}%)`
+              return `after a finished task from ${at(e.compact_soft)} · at any calm stop from ${at(e.compact_at)} · always from ${at(e.compact_hard)}`
+            })()}</Text>}
           <Text> </Text>
           <Text bold>Plan usage</Text>
           {fh === undefined && sd === undefined

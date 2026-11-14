@@ -70,5 +70,7 @@ The app only starts a worker at or below Home's own model and effort. For Opus o
 3. send the brief with `SendMessage` (`to`: its `local_…` id).
 
 ## 5. Record and reply
+(When the worker later reports done: `cairn.py report <t-id> --status done --note "…"`, then archive its session as the
+output says, and tell the user in one line.)
 `cairn.py report <t-id> --session <session_id from the result>`, then reply in 1-2 lines:
 `Started [<title>](#local_<id>) on <model>/<effort>: <what it will do>.` Nothing else.
