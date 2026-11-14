@@ -1,0 +1,218 @@
+{
+ "runs": 12,
+ "model": "haiku",
+ "off": {
+  "usd": 0.005656658333333334,
+  "turns": 3.1666666666666665,
+  "ctxAvg": 35930.18421052631,
+  "cacheRead": 91559.16666666667,
+  "cacheWrite": 22215.083333333332,
+  "out": 595.1666666666666
+ },
+ "on": {
+  "usd": 0.006169537500000002,
+  "turns": 3.6666666666666665,
+  "ctxAvg": 35187.77272727273,
+  "cacheRead": 105522.91666666667,
+  "cacheWrite": 23493.75,
+  "out": 830.0833333333334
+ },
+ "raw": {
+  "off": [
+   {
+    "usd": 0.0046181700000000004,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 66147,
+    "cacheWrite": 18159,
+    "out": 649
+   },
+   {
+    "usd": 0.00582777,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 74057,
+    "cacheWrite": 23424,
+    "out": 804
+   },
+   {
+    "usd": 0.00551085,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 76255,
+    "cacheWrite": 22412,
+    "out": 531
+   },
+   {
+    "usd": 0.00539414,
+    "turns": 2,
+    "fresh": 4,
+    "cacheRead": 76264,
+    "cacheWrite": 22233,
+    "out": 369
+   },
+   {
+    "usd": 0.00535339,
+    "turns": 2,
+    "fresh": 4,
+    "cacheRead": 76259,
+    "cacheWrite": 22142,
+    "out": 324
+   },
+   {
+    "usd": 0.00600845,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 125265,
+    "cacheWrite": 22356,
+    "out": 568
+   },
+   {
+    "usd": 0.00631625,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 125765,
+    "cacheWrite": 23230,
+    "out": 824
+   },
+   {
+    "usd": 0.00613829,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 125619,
+    "cacheWrite": 22535,
+    "out": 749
+   },
+   {
+    "usd": 0.0060206899999999995,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 125439,
+    "cacheWrite": 22351,
+    "out": 591
+   },
+   {
+    "usd": 0.00571032,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 75512,
+    "cacheWrite": 23079,
+    "out": 678
+   },
+   {
+    "usd": 0.00550491,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 76061,
+    "cacheWrite": 22337,
+    "out": 553
+   },
+   {
+    "usd": 0.0054766699999999995,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 76067,
+    "cacheWrite": 22323,
+    "out": 502
+   }
+  ],
+  "on": [
+   {
+    "usd": 0.0050314800000000005,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 69728,
+    "cacheWrite": 19839,
+    "out": 732
+   },
+   {
+    "usd": 0.005876389999999999,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 76269,
+    "cacheWrite": 23714,
+    "out": 741
+   },
+   {
+    "usd": 0.00591007,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 76257,
+    "cacheWrite": 23753,
+    "out": 793
+   },
+   {
+    "usd": 0.00629915,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 126245,
+    "cacheWrite": 23673,
+    "out": 603
+   },
+   {
+    "usd": 0.00641664,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 126404,
+    "cacheWrite": 23830,
+    "out": 772
+   },
+   {
+    "usd": 0.006382690000000001,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 127549,
+    "cacheWrite": 23648,
+    "out": 754
+   },
+   {
+    "usd": 0.006519970000000001,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 127977,
+    "cacheWrite": 23818,
+    "out": 952
+   },
+   {
+    "usd": 0.00658962,
+    "turns": 5,
+    "fresh": 6,
+    "cacheRead": 127842,
+    "cacheWrite": 23993,
+    "out": 1024
+   },
+   {
+    "usd": 0.00721936,
+    "turns": 5,
+    "fresh": 8,
+    "cacheRead": 178796,
+    "cacheWrite": 24193,
+    "out": 1184
+   },
+   {
+    "usd": 0.00606135,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 74935,
+    "cacheWrite": 24288,
+    "out": 908
+   },
+   {
+    "usd": 0.00591005,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 77145,
+    "cacheWrite": 23701,
+    "out": 796
+   },
+   {
+    "usd": 0.00581768,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 77128,
+    "cacheWrite": 23475,
+    "out": 702
+   }
+  ]
+ }
+}
