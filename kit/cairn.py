@@ -409,6 +409,36 @@ def router_context(name, sess):
             "Route every new instruction using the 'Routing' rules in CLAUDE.md.")
 
 
+def morning_digest(now=None):
+    """Short board summary (done since yesterday, waiting on the user, queued), at most 10 lines.
+    Returns "" when the board has nothing to say."""
+    now = now or time.time()
+    tasks = board_load()["tasks"]
+    done = [t for t in tasks if t["status"] == "done" and now - t.get("updated", t["started"]) <= 86400]
+    wait = [t for t in tasks if t["status"] == "waiting"]
+    queued = [t for t in tasks if t["status"] == "queued"]
+    if not (done or wait or queued):
+        return ""
+    lines = ["[Cairn] Morning digest. Show this to the user in a few lines before anything else:"]
+    for label, rows, cap in (("Done since yesterday", done, 3), ("Waiting on you", wait, 3), ("Queued", queued, 2)):
+        if not rows:
+            continue
+        more = f" (+{len(rows) - cap} more)" if len(rows) > cap else ""
+        lines.append(f"{label} ({len(rows)}): " + "; ".join(f"{t['id']} {t['title']}" for t in rows[:cap]) + more)
+    return "\n".join(lines)[:1200]
+
+
+def digest_due():
+    """True once per calendar day; records the day."""
+    c = read_json(CFG, {}) or {}
+    today = date.today().isoformat()
+    if c.get("digest_shown") == today:
+        return False
+    c["digest_shown"] = today
+    write_json(CFG, c)
+    return True
+
+
 def cmd_session_start():
     try:
         d = json.load(sys.stdin)
@@ -422,6 +452,7 @@ def cmd_session_start():
 
     cwd = d.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     out = []
+    dg = ""
     sess = Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd) / "SESSION.md"
     if sess.exists():
         out.append("[Cairn] Saved working state from SESSION.md is below. If the user's first message "
@@ -429,7 +460,14 @@ def cmd_session_start():
                    "next instruction is unrelated, treat that as the new goal. Otherwise continue from here:\n"
                    + sess.read_text(encoding="utf-8", errors="replace")[:5000])
 
+    if source == "startup" and BOARD.exists() and digest_due():
+        dg = morning_digest()
+        if dg:
+            out.append(dg)
+
     if is_home(cwd):
+        if dg:
+            print(dg)
         write_json(CAIRN / "marks" / f"{sid}.json", {"reset_line": reset_line, "repo": "home", "home": True})
         rows = [t for t in board_rows(refresh=False) if t["status"] in ("running", "waiting", "queued")]
         board = "; ".join(f"{t['id']} {t['status']} '{t['title']}'" for t in rows[:12]) or "empty"

@@ -146,3 +146,37 @@ class Scope(unittest.TestCase):
         out = run(m, "dispatch", "--repo", "a", "--title", "a: x", "--scope", "push own repo; spend<=5USD")
         self.assertIn("scope='push own repo; spend<=5USD'", out)
         self.assertEqual(json.loads(m.BOARD.read_text())["tasks"][0]["scope"], "push own repo; spend<=5USD")
+
+
+class Digest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.m = load(self.tmp)
+        self.m.CAIRN.mkdir(parents=True)
+        now = time.time()
+        mk = lambda i, s, u: {"id": i, "title": f"r: {i}", "status": s, "started": u, "updated": u}
+        self.m.BOARD.write_text(json.dumps({"next": 9, "tasks": [
+            mk("t1", "done", now - 3600), mk("t2", "done", now - 5 * 86400),
+            mk("t3", "waiting", now), mk("t4", "queued", now)]}))
+        self.scratch = self.tmp / "proj"
+        self.scratch.mkdir()
+
+    def start(self, source="startup"):
+        return run(self.m, "session-start", stdin={"session_id": "s1", "cwd": str(self.scratch), "source": source})
+
+    def test_digest_content_and_size(self):
+        d = self.m.morning_digest()
+        self.assertIn("t1", d)
+        self.assertNotIn("t2", d)  # finished days ago
+        self.assertIn("Waiting on you (1)", d)
+        self.assertIn("Queued (1)", d)
+        self.assertLessEqual(len(d.splitlines()), 10)
+
+    def test_empty_board_is_silent(self):
+        self.m.BOARD.write_text(json.dumps({"next": 1, "tasks": []}))
+        self.assertEqual(self.m.morning_digest(), "")
+
+    def test_shown_once_per_day_at_startup_only(self):
+        self.assertNotIn("Morning digest", self.start("resume"))
+        self.assertIn("Morning digest", self.start())
+        self.assertNotIn("Morning digest", self.start())
