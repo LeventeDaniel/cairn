@@ -66,3 +66,16 @@ Conclusion across Haiku and Sonnet: hooks + CLAUDE.md cost +7-10% on short tasks
 
 ## Round 5 (2026-11-14): slim block (kit `5f57eb7`), Haiku short, n=12 per arm
 CLAUDE block 4.5 KB -> 2.0 KB; routing table and spawn rules moved to the on-demand `route` skill (loaded only when an instruction is not a plain continuation). Result: cache write overhead 2.6k -> 1.3k tokens per session (off 22.2k, on 23.5k). Cost per run: off $0.00566, on $0.00617 (+9%, was +10-12%). Turns 3.17 vs 3.67 and output 595 vs 830 tokens: with 3-turn tasks one extra turn is +10% cost, and that noise is larger than the saving from 1.3k fewer tokens, so the cost change is NOT distinguishable from the earlier round. What is measured: injected context halved. What is not: a reliable cost difference at this sample size. Behaviour risk: the block no longer lists the routing rows, so routing now depends on the model invoking `route`; not tested here (needs interactive sessions).
+
+## Round 6 (2026-11-14): long multi-stage scenario, Haiku (`bench/scenario.py`)
+Five stages (package, tests, feature, docs, bugfix) with an idle gap of 330 s (past the 5-minute cache TTL) before stage 3. Arm A: Cairn off, one session continued with `--resume`. Arm B: Cairn on, each stage in a fresh session that reads SESSION.md and updates it (the handoff Cairn does). Correctness: a check command per stage.
+
+| run | A one session | B handoff stages | correct (A / B) |
+|---|---|---|---|
+| 1 | $0.074, 117 s | $0.052, 156 s | 4/5, 4/5 (stage-1 check was a broken command, so these are false alarms) |
+| 3 (checks fixed) | $0.106, 120 s | $0.049, 151 s | 5/5, 5/5 |
+| 2 | cut off by the 5-hour limit in arm B (two stages recorded $0): invalid, kept as results-scenario-run2-partial.json | | |
+
+Reading: with handoff stages, total cost was 30% (run 1) and 54% (run 3) lower, same correctness, but about 25% more wall time (each fresh session re-reads state). Per-stage cost in A grows with each stage; in B it stays flat at ~$0.008-0.011.
+Caveats, important: (1) A pays an artefact of headless `--resume`: every call re-writes the prompt cache for the whole growing context (round 3). Interactive replies within the TTL read it at ~10% of that price, so the real gap is smaller than shown; how much smaller is not measured here. (2) B's gain comes from small fresh contexts, which one can also get without Cairn by starting fresh sessions by hand; it shows the handoff pattern works, not that Cairn does it better. (3) The mod's compaction, idle compaction and cache warnings did not run (no mod under `claude -p`). (4) The 'ctx' numbers in the json sum all inner turns of a call and are not a per-turn context curve. (5) 2 valid runs, Haiku, small project.
+What the data says to build: handoff via SESSION.md plus fresh sessions per stage is the one measured saving (0.3-0.5x cost); a "stage boundary" nudge (suggest a fresh session + handoff when a stage ends and context is large) is the feature this supports. Not built yet.
