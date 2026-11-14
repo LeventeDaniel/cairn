@@ -1,6 +1,16 @@
 # cairn
 
-Companion mod for Cairn. It shows a live **Cairn** pane (context fill, plan usage, cost, work tracked, recent compactions, inbox notes) and a status entry, and it makes compaction keep what matters.
+Companion mod for Cairn. It shows a live **Cairn** pane and a status entry, and it makes compaction keep what matters.
+
+## The pane
+
+By default the pane shows three things, in plain words:
+
+- **Needs you**: sessions or board tasks waiting for your answer, one line each ("Nothing needs you." when clear), plus notes waiting in the inbox.
+- **Running now**: sessions working at the moment, one line each.
+- **Your plan**: a bar and "N% of your 5-hour limit used". When the savings ledger has real Cairn compactions it adds "Cairn saved about $N this week (estimate)". One short advice sentence appears only when you should act (plan nearly used, chat very long).
+
+Press **▸ Details** (closed by default) for everything else: context breakdown and compaction thresholds, usage per day, savings ledger and measured numbers, work tracked, compaction history, workspace per repo, board, stale cleanup and inbox. Session lines are plain text for now: the pane cannot link to a desktop session.
 
 ## What it does
 

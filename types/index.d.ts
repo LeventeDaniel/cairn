@@ -94,6 +94,7 @@ declare module 'claude-code' {
       comps: Shaped<Compaction[]>
       offer: Shaped<Offer | null>
       ws: Shaped<Workspace | null>
+      details: Shaped<boolean>
       ledger: Shaped<import('../hooks/ledger').LedgerEvent[]>
     }
   }

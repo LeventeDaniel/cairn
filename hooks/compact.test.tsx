@@ -28,6 +28,7 @@ function engine(on: any, seen: { compact?: any }, opts: { summary: string; refus
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
   on('clock.now', () => ({ value: 1000 }))
+  on('clock.after', () => ({ value: undefined }))
   on('tool.call', (_: any, e: any) =>
     e.tool === 'Bash' && e.command === 'npm test'
       ? { isError: true, result: 'FAIL', text: 'FAIL src/a.test.ts\nExpected 1 got 2' }
@@ -72,8 +73,10 @@ test('compaction gets Cairn notes, trimmed results, and a patched summary', asyn
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'details' })
     expect((await ui.find({ type: 'Text', text: /600k → 40k/ }))?.text).toContain('check patched')
     expect((await ui.find({ type: 'Text', text: /Open failures/ }))?.text).toContain('npm test')
+    await ui.press({ key: 'details' }) // the open state is shared: close it for the next surface
     await ui.unmount()
   }
 })
@@ -88,6 +91,7 @@ test('a summary that kept the files is left alone; a passing rerun clears the fa
   expect(res.messages[0].text).toBe('Edited register.tsx; tests next.')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'details' })
   expect((await ui.find({ type: 'Text', text: /check ok/ }))).toBeTruthy()
   expect((await ui.find({ type: 'Text', text: /Open failures/ }))).toBeUndefined()
   await ui.unmount()
