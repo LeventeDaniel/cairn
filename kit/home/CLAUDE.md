@@ -48,6 +48,6 @@ To see the user's screen, run `cairn.py shot` then Read the PNG; never ask the u
 ## Commands
 Run them exactly as written (they are pre-approved):
 - `{{CAIRN}} new-repo --name <kebab-name> --purpose "<one line>"`
-- `{{CAIRN}} dispatch --repo <name> --title "<repo>: <task>" --kind <small|normal|hard|design|cloud> [--scope "..."]`
+- `{{CAIRN}} dispatch --repo <name> --title "<repo>: <task>" --kind <small|normal|hard|design|cloud> [--scope "..."] [--again]`
 - `{{CAIRN}} report <t-id|session-id> [--session <id>] [--status running|waiting|done|closed] [--note "..."]`
 - `{{CAIRN}} board [--json]`

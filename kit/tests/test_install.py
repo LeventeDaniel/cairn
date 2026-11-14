@@ -120,6 +120,23 @@ class Install(unittest.TestCase):
         self.assertEqual((self.cl / "cairn" / "cairn.py").read_text(encoding="utf-8"),
                          (KIT / "cairn.py").read_text(encoding="utf-8"))
 
+    def test_hook_input_is_read_as_utf8_whatever_the_console_codepage(self):
+        # Windows pipes default to cp1252: "\u00b7" arrived as two wrong characters, accents in titles and folders too.
+        self.install()
+        cairn = self.cl / "cairn" / "cairn.py"
+        board = self.cl / "cairn" / "board.json"
+        board.write_text(json.dumps({"next": 2, "tasks": [{
+            "id": "t1", "repo": "a", "title": "a: caf\u00e9", "kind": "small", "model": "sonnet", "effort": "low",
+            "session": "", "cliSession": "u1", "status": "running", "started": 0, "updated": 0, "report": ""}]}))
+        payload = json.dumps({"session_id": "u1", "last_assistant_message": "Gata \u00b7 f\u0103cut \u2713"},
+                             ensure_ascii=False)
+        env = {k: v for k, v in self.env.items() if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+        r = subprocess.run([sys.executable, str(cairn), "stop"], env=env, input=payload.encode("utf-8"),
+                           capture_output=True, cwd=self.home)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        last = json.loads(board.read_text(encoding="utf-8"))["tasks"][0]["last"]
+        self.assertEqual(last, "Gata \u00b7 f\u0103cut \u2713")
+
     def test_block_is_slim_and_routing_lives_in_the_route_skill(self):
         self.install()
         block = (self.cl / "CLAUDE.md").read_text(encoding="utf-8")

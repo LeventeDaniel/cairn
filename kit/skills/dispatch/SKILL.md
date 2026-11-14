@@ -40,7 +40,9 @@ without asking again. Anything outside it, or any app dialog that still appears,
 ## 2. Board first
 `cairn.py dispatch --repo <name from REPOS.md> --title "<repo>: <task in 2-5 words>" --kind <kind> [--scope "<answers>"]`
 - `OK t7 model=… effort=…` → go on.
-- `QUEUED t7 …` → don't start it; tell the user in one line. Start it when a running one is done.
+- `QUEUED t7 …` → don't start it; tell the user in one line. Start it when a running one is done
+  (`cairn.py report` prints `QUEUED TASK CAN START` when a slot frees).
+- `ALREADY ON THE BOARD: t5 …` → that task has a worker; say so in one line with its link, start nothing.
 
 ## 3. The brief (the worker sees nothing of this chat)
 ```
