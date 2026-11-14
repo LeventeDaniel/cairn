@@ -7,7 +7,7 @@ import type { LedgerEvent } from './ledger'
 import { advice, health, needsAndRunning } from './panel'
 import type { Item } from './panel'
 
-const VERSION = '0.7.0'
+const VERSION = '0.8.0'
 const PANE = 'cairn'
 const TITLE = 'Cairn'
 // Tunable in ~/.claude/cairn/config.json, next to Cairn's own keys.
@@ -63,6 +63,23 @@ function claudeDir(root: string): string {
   return i >= 0 ? p.slice(0, i + '/.claude'.length) : p
 }
 
+/**
+ * ~/.claude for this computer. The Cairn hook's own path says where it is (…/.claude/cairn/cairn.py);
+ * only without that hook is it guessed from the mod's folder. A mod loaded in place from a checkout
+ * (a marketplace added as a local folder) does not live under ~/.claude at all: guessing from its
+ * folder put state/, the ledger and the config lookup inside the repo, where cairn.py never looks.
+ */
+let homeDir: string | undefined
+async function cairnHome($: EngineInterface): Promise<string> {
+  if (homeDir) return homeDir
+  try {
+    const script = (await cairnCommand($))?.[1]?.replace(/\\/g, '/')
+    const m = script?.match(/^(.+)\/[^/]+\/[^/]+$/)
+    if (m) return (homeDir = m[1]!)
+  } catch { /* settings unreadable: guess below, and ask again next time */ }
+  return claudeDir($.plugin.root)
+}
+
 /** Same rule as cairn.py's safe_id, so both name the same state file. */
 const safeId = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80) || 'unknown'
 
@@ -80,7 +97,7 @@ let turnDone = ''      // what finished, '' if nothing
 let turnSeq = 0        // main-loop turns started; an idle timer checks nothing new began
 let snoozedTo = 0      // "Not now": no new offer below this %
 let cairnRun = false   // a compaction Cairn queued is running (the app's own are not)
-let coldRun = false    // ...and it was for a cold or soon-cold prompt cache
+let coldRun = false    // ...and it ran while the cache was still warm, just before it expired (the guard)
 let compactions = 0    // main-loop compactions done; a cache timer checks none ran since
 
 /** True when this session runs in Cairn Home's folder (~/.claude/cairn/home). */
@@ -145,14 +162,19 @@ async function refreshWorkspace($: EngineInterface, force = false) {
     changed = key !== wsKey
     wsKey = key
     // Only Cairn Home speaks for the board; other open sessions stay quiet.
-    const speak = await inHome($, claudeDir($.plugin.root))
+    const speak = await inHome($, await cairnHome($))
     for (const t of speak ? w.board ?? [] : []) {
       const was = boardSeen.get(t.id)
-      if (boardSeen.size > 0 && was !== undefined && was !== t.status && (t.status === 'done' || t.status === 'waiting')) {
-        $.ui.toast((t.status === 'done' ? 'Finished: ' : 'Needs you: ') + t.title.slice(0, 50) + (t.report && !t.reportStale ? ' - ' + t.report.slice(0, 60) : ''))
+      const asks = t.status === 'waiting' && t.waitingFor ? t.waitingFor : ''
+      const [wasStatus, wasAsks] = (was ?? '|').split('|')
+      // A status change, or a prompt that just opened (a worker stuck on a permission prompt is the urgent case).
+      if (boardSeen.size > 0 && was !== undefined && (t.status === 'done' || t.status === 'waiting') &&
+          (wasStatus !== t.status || (asks && asks !== wasAsks))) {
+        const why = asks || (t.report && !t.reportStale ? t.report.slice(0, 60) : t.last?.slice(0, 60) ?? '')
+        $.ui.toast((t.status === 'done' ? 'Finished: ' : 'Needs you: ') + t.title.slice(0, 50) + (why ? ' - ' + why : ''))
       }
     }
-    boardSeen = new Map((w.board ?? []).map(t => [t.id, t.status]))
+    boardSeen = new Map((w.board ?? []).map(t => [t.id, `${t.status}|${t.status === 'waiting' && t.waitingFor ? t.waitingFor : ''}`]))
     await update($, ws, () => w)
   } catch (err) {
     $.ui.log(`cairn: workspace refresh failed: ${String(err)}`)
@@ -358,7 +380,7 @@ async function logUsage($: EngineInterface, home: string, usd: number | undefine
 // ------------------------------------------------------------ savings ledger
 async function logEvent($: EngineInterface, ev: LedgerEvent) {
   try {
-    const file = `${claudeDir($.plugin.root)}/${LEDGER_FILE}`
+    const file = `${await cairnHome($)}/${LEDGER_FILE}`
     let prev: LedgerEvent[] = []
     try { prev = parseLedger(await $.fs.read(file)) } catch { /* first event */ }
     const next = addEvent(prev, ev)
@@ -375,7 +397,7 @@ async function warned($: EngineInterface, source: 'cold' | 'guard', tokens: numb
 
 // ------------------------------------------------------------ measuring
 async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'rateLimits' | 'cost'>) {
-  const home = claudeDir($.plugin.root)
+  const home = await cairnHome($)
   await loadCfg($, home)
   const p = u.context.percent
   const level = p === undefined ? 0 : p >= cfg.urgent ? 2 : p >= cfg.warn ? 1 : 0
@@ -468,7 +490,7 @@ async function decide($: EngineInterface) {
   const v = verdict(p, cfg.compact_mode, cfg, done, w.fails.length, snoozedTo)
   try {
     // The last decision, for anyone checking why Cairn did or didn't compact.
-    await $.fs.write(`${claudeDir($.plugin.root)}/cairn/state/compact-decision.json`, JSON.stringify({
+    await $.fs.write(`${await cairnHome($)}/cairn/state/compact-decision.json`, JSON.stringify({
       t: Date.now() / 1000, version: VERSION, pct: p, mode: cfg.compact_mode, done, openFails: w.fails.length,
       snoozedTo, act: v.act, reason: v.reason,
     }))
@@ -489,8 +511,26 @@ async function decide($: EngineInterface) {
   }
 }
 
+/**
+ * A worker Cairn Home started whose board task is done or closed. Nobody is going to send it another
+ * message, so compacting it while it sits idle buys nothing and spends plan usage (with many finished
+ * workers open, a compaction each). The offer stays up for the person who does come back to it.
+ */
+async function finishedWorker($: EngineInterface): Promise<boolean> {
+  try {
+    const sid = await $.session.id()
+    const b = JSON.parse(await $.fs.read(`${await cairnHome($)}/cairn/board.json`)) as
+      { tasks?: { cliSession?: string; status?: string }[] }
+    const mine = (b.tasks ?? []).filter(t => t.cliSession === sid)
+    return mine.length > 0 && mine.every(t => t.status === 'done' || t.status === 'closed')
+  } catch {
+    return false
+  }
+}
+
 async function idleCompact($: EngineInterface, seq: number) {
   if (seq !== turnSeq || pending || compacting || !(await read($, offer))) return
+  if (await finishedWorker($)) return
   await update($, offer, () => null)
   $.ui.toast("Cairn compacted while you were away: see the Cairn pane")
   queueCompact($)
@@ -517,6 +557,7 @@ async function cacheGuard($: EngineInterface, seq: number, done: number) {
   const { tokens = 0, percent = 0 } = await read($, snap)
   if (percent < snoozedTo) return // "Not now" stands
   if (tokens < cfg.cache_min_tokens) return
+  if (await finishedWorker($)) return
   await update($, offer, () => null)
   await warned($, 'guard', tokens)
   coldRun = true
@@ -559,14 +600,16 @@ async function coldCheck($: EngineInterface) {
   await warned($, 'cold', last.tokens)
   await update($, offer, () => ({
     percent, at: now, cold: true,
-    reason: `away ${away}, the prompt cache expired: the next reply re-reads ${k(last.tokens)} tokens at full price, compacting first makes it and later replies cheaper`,
+    reason: `away ${away}, the prompt cache expired: ${k(last.tokens)} tokens are re-read at full price once either way, compacting first makes the replies after that cheaper`,
   }))
-  // Nobody is at the screen to click the band: compact now, before the first reply re-reads it all.
+  // Nobody is at the screen to click the band: compact now, so the replies after this one are cheap.
   // If it can't run, the offer stays up as the fallback.
-  if (cfg.compact_mode === 'smart' || cfg.compact_mode === 'auto') {
+  // Not a "cold re-read avoided" in the ledger: with the cache already expired the summarizing request
+  // itself reads the whole history uncached (code.claude.com/docs/en/prompt-caching, "Compacting the
+  // conversation"). Only the guard, which compacts while the cache is still warm, avoids that read.
+  if ((cfg.compact_mode === 'smart' || cfg.compact_mode === 'auto') && !(await finishedWorker($))) {
     $.ui.toast(`Cairn is compacting: away ${away}, the prompt cache expired`)
     tries = 0
-    coldRun = true
     queueCompact($)
   }
 }
@@ -644,11 +687,11 @@ export const register: Register = on => {
       $.ui.log(`cairn: cold-start check failed: ${String(err)}`)
     }
     try {
-      const evs = parseLedger(await $.fs.read(`${claudeDir($.plugin.root)}/${LEDGER_FILE}`))
+      const evs = parseLedger(await $.fs.read(`${await cairnHome($)}/${LEDGER_FILE}`))
       await update($, ledger, () => evs)
     } catch { /* no ledger yet */ }
     try {
-      const m = parseMeasured(await $.fs.read(`${claudeDir($.plugin.root)}/${MEASURED_FILE}`))
+      const m = parseMeasured(await $.fs.read(`${await cairnHome($)}/${MEASURED_FILE}`))
       await update($, measured, () => measuredLines(m))
     } catch {
       await update($, measured, () => measuredLines(null))
@@ -697,7 +740,7 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e)) // never in the way: replays or runs the call as normal
 
   on('session.compact', async ($, e, next) => {
-    const home = claudeDir($.plugin.root)
+    const home = await cairnHome($)
     await loadCfg($, home)
     const isSubagent = e.agentId !== undefined
     const msgs = e.messages ?? []

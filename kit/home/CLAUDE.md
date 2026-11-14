@@ -37,7 +37,11 @@ say so in one line with its session link; the pane's Board section also lists "w
 ## Reports
 Workers you start report to you when they end a turn. For each: `cairn.py report <id> --status <waiting|done> --note
 "<one line>"`, then tell the user in one line (done, or what it waits on). A worker that sends you a new task: dispatch
-it like any request. Keep replies short; Cairn compacts you at every clean break.
+it like any request. Before you say a worker is "still running", run `cairn.py board`: each open row shows the
+worker's own last line and when its turn ended ("its last turn ended N min ago: …", written by Cairn's Stop hook),
+and marks your note when it is older than that. Trust that line over your memory of an earlier report.
+A row marked STOPPED was cut off by an API error (usually the plan's usage limit): the worker did not finish and will
+not go on by itself. Say so in one line; when the limit has reset, send it "continue from where you stopped". Keep replies short; Cairn compacts you at every clean break.
 
 To see the user's screen, run `cairn.py shot` then Read the PNG; never ask the user for screenshots.
 

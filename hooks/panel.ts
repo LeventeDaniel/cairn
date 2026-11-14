@@ -1,4 +1,4 @@
-import type { Snap, Workspace } from '../types'
+import type { BoardTask, Snap, Workspace } from '../types'
 import { summarize } from './ledger'
 import type { LedgerCfg, LedgerEvent } from './ledger'
 
@@ -28,6 +28,21 @@ export const sessionHref = (id?: string | null): string | undefined =>
 const title = (t: string) => clip(t, 48)
 
 /**
+ * Why a board task waits. Home's note counts while it is newer than the worker's last turn; after
+ * that the worker's own last line (written by its Stop hook) is the truth, not an old "still running".
+ */
+export function waitingHint(t: BoardTask, now: number): string {
+  if (t.waitingFor) return `Waiting for you: ${t.waitingFor}`
+  if (t.stopped) {
+    return t.stopped === 'rate_limit' ? 'Cut off by the usage limit: tell it to continue after the reset'
+      : `Stopped by an error (${t.stopped}): open it or tell it to continue`
+  }
+  if (t.report && !t.reportStale) return clip(t.report, 70)
+  if (t.pending && t.turnEnded) return `Quiet for ${Math.round((now - t.turnEnded) / 60)} min with background work pending: check it`
+  return t.last ? clip(`Finished its turn: ${t.last}`, 90) : 'Finished its turn: open it and check'
+}
+
+/**
  * What needs the person, and what runs now, from Cairn Home's board and the live sessions of
  * every repo. A board task and a live session for the same thing show once.
  */
@@ -39,7 +54,7 @@ export function needsAndRunning(w: Workspace | null, inbox: readonly string[]): 
   for (const t of w.board ?? []) {
     const key = t.cliSession || t.session
     if (t.status === 'waiting') {
-      needs.push({ text: title(t.title), hint: t.report && !t.reportStale ? clip(t.report, 70) : 'Finished its turn: open it and check', href: sessionHref(t.session) })
+      needs.push({ text: title(t.title), hint: waitingHint(t, w.at), href: sessionHref(t.session) })
       seen.add(key); seen.add(t.title)
     } else if (t.status === 'running') {
       running.push({ text: title(t.title), href: sessionHref(t.session) })
@@ -49,10 +64,13 @@ export function needsAndRunning(w: Workspace | null, inbox: readonly string[]): 
   for (const r of w.repos) {
     for (const s of r.sessions) {
       if (seen.has(s.id) || seen.has(s.title)) continue
-      if (s.status === 'waiting') needs.push({ text: title(s.title), hint: 'Waiting for your answer', href: sessionHref(s.id) })
+      if (s.status === 'waiting') needs.push({ text: title(s.title), hint: s.waitingFor ? `Waiting for you: ${s.waitingFor}` : 'Waiting for your answer', href: sessionHref(s.id) })
       else if (s.status === 'busy') running.push({ text: title(s.title), href: sessionHref(s.id) })
     }
   }
+  // A worker with a prompt open comes first: it is stuck until answered; the rest only wait to be read.
+  const open = new Set((w.board ?? []).filter(t => t.status === 'waiting' && t.waitingFor).map(t => title(t.title)))
+  needs.sort((a, b) => Number(open.has(b.text)) - Number(open.has(a.text)))
   if (inbox.length) needs.push({ text: `Notes waiting for ${inbox.join(', ')}`, hint: 'They show up in your next session there' })
   return { needs, running }
 }

@@ -5,6 +5,8 @@ Subcommands (wired up by install.py):
   statusline     status line: shows context %, usage; saves exact numbers for the hooks
   prompt         UserPromptSubmit hook: advises /clear, handoff, subagents, model choice
   session-start  SessionStart hook: restores SESSION.md, delivers inbox notes, keeps repo registry
+  stop           Stop / StopFailure hook: a worker's turn ended (or an API error such as the usage
+                 limit cut it off); its own last line, or the error, goes on its board row
   audit          prints what loads into every session and how big it is
   spawn          lets Claude start a background/cloud session (or a new repo) on its own
   dispatch       Home: add a task to the board (checks the running cap, fills model/effort defaults)
@@ -195,10 +197,17 @@ def words(text):
     return {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", text.lower()) if w not in STOP}
 
 
+# UserPromptSubmit also fires for messages from other sessions, subagent reports and scheduled turns
+# (code.claude.com/docs/en/hooks). Those are not the user changing the subject.
+NOT_TYPED = ("<cross-session-message", "<task-notification", "<side-sessions-event", "<ci-monitor-event",
+             "<system-reminder", "Another Claude session sent a message")
+
+
 def topic_shift(prompt, cwd):
     """The session's goal when a substantial new prompt shares no word with goal or next steps; else ''."""
     pw = words(prompt)
-    if len(pw) < 6 or prompt.lstrip().startswith(("[", "<", "/")):
+    head = prompt.lstrip()[:600]
+    if len(pw) < 6 or head.startswith(("[", "<", "/")) or any(m in head for m in NOT_TYPED):
         return ""
     try:
         # The same file session-start restores: this checkout's own. In a git worktree the main
@@ -264,6 +273,9 @@ def cmd_prompt():
                      "skill yourself and suggest /clear in one line.")
     cwd = d.get("cwd") or os.getcwd()
     home = is_home(cwd)
+    title = (d.get("session_title") or "").strip()
+    if title and not home:
+        claim_worker(sid, title)
     shift = "" if home else topic_shift(d.get("prompt") or "", Path(cwd))
     worker = bool(shift) and is_worker(sid)
     if worker:
@@ -278,19 +290,27 @@ def cmd_prompt():
     if tools >= c["tool_results"]:
         notes.append(f"{tools} tool results are in context since the last reset. Send further searching, "
                      "file/log reading or research to the scout or researcher subagent.")
+    cut = stopped_workers() if home else []
+    if cut:
+        notes.append(f"{len(cut)} worker(s) were cut off by the plan's usage limit and are not running: "
+                     + "; ".join(f"{t['id']} '{t['title']}'" for t in cut[:5])
+                     + ". Tell the user in one line. When the limit has reset, send each one 'continue from where you "
+                     "stopped' with SendMessage (a status relay, not an approval).")
     fh, sd = st.get("five_hour"), st.get("seven_day")
     now = time.time()  # a saved percentage from before the window reset says nothing about now
     if st.get("five_hour_resets") and now > st["five_hour_resets"]:
         fh = None
     if st.get("seven_day_resets") and now > st["seven_day_resets"]:
         sd = None
+    if now - (st.get("t") or now) > 5 * 3600:
+        fh = None  # no reset time saved (the mod's state has none): a reading older than the window is void
     if (fh or 0) >= c["usage_warn"] or (sd or 0) >= c["usage_warn"]:
         notes.append(f"Plan usage is high (5h {fh or 0:.0f}%, 7d {sd or 0:.0f}%). Prefer haiku/sonnet "
                      "subagents and low effort; suggest a smaller main model with /model in one line.")
 
     # Don't nag: speak when something changes, then every N prompts while it persists.
     nag = read_json(CAIRN / "nag" / f"{sid}.json", {}) or {}
-    key = f"{level}|{tools >= c['tool_results']}|{bool(notes and 'usage' in notes[-1])}|{bool(shift)}"
+    key = f"{level}|{tools >= c['tool_results']}|{bool(notes and 'usage' in notes[-1])}|{bool(shift)}|{','.join(t['id'] for t in cut)}"
     since = nag.get("since", 0) + 1
     speak = notes and (key != nag.get("key") or since >= c["repeat_every"])
     write_json(CAIRN / "nag" / f"{sid}.json", {"key": key, "since": 0 if speak else since})
@@ -299,7 +319,9 @@ def cmd_prompt():
         marks["named"] = True
         write_json(CAIRN / "marks" / f"{sid}.json", marks)
         repo = marks.get("repo") or "this repo"
-        if home:
+        if title == HOME_TITLE if home else re.match(r"[^:\n]{1,40}: \S", title):
+            pass  # already titled (Home titles the workers it starts): no note, no tool call
+        elif home:
             print(f"[Cairn] Title this session '{HOME_TITLE}' with the app's session-title tool, silently. "
                   "Workers find Home by that title.")
         else:
@@ -317,16 +339,25 @@ def take_inbox(name):
         return ""
     box = INBOX / f"{name}.md"
     try:
-        notes = box.read_text(encoding="utf-8")
+        if box.stat().st_size == 0:
+            return ""
+        # Take the file away first, then read it. Reading and then emptying it lost a note appended in
+        # between, and two sessions starting together both delivered the same notes.
+        mine = box.with_name(f"{name}.{os.getpid()}.taking")
+        os.replace(box, mine)
+        notes = mine.read_text(encoding="utf-8")
     except OSError:
-        return ""
-    if not notes.strip():
         return ""
     arch = INBOX / "archive"
     arch.mkdir(parents=True, exist_ok=True)
     with open(arch / f"{name}.md", "a", encoding="utf-8") as a:
-        a.write(notes)
-    box.write_text("", encoding="utf-8")
+        a.write(notes if notes.endswith("\n") or not notes else notes + "\n")
+    try:
+        mine.unlink()
+    except OSError:
+        pass
+    if not notes.strip():
+        return ""
     return (f"[Cairn] New notes for '{name}' (results from sessions you started, or notes from other "
             "repos) — tell the user in one line each:\n" + notes[:3000])
 
@@ -393,9 +424,10 @@ def registry_touch(root):
             break
     if best:
         i, _, f = best
-        f[4] = today
-        lines[i] = "- " + " | ".join(f)
-        write_text_atomic(REGISTRY, "\n".join(lines) + "\n")
+        if f[4] != today:  # once a day, not at every session start: each rewrite could undo an edit made meanwhile
+            f[4] = today
+            lines[i] = "- " + " | ".join(f)
+            write_text_atomic(REGISTRY, "\n".join(lines) + "\n")
         return f[0], False
     name = re.sub(r"[^A-Za-z0-9_.-]", "-", Path(root).name) or "project"
     if not registrable(root):
@@ -424,9 +456,11 @@ def repeated_procedures(min_count=3):
     return [k for k, v in counts.items() if v >= min_count and re.sub(r"\W+", "-", k) not in have]
 
 
-def router_context(name, sess):
+def router_context(name, sess, restored=False):
     goal = "not set yet"
-    if sess.exists():
+    if restored:
+        goal = "in SESSION.md above"  # just printed in full: don't spend the tokens twice
+    elif sess.exists():
         m = re.search(r"##\s*Goal[^\n]*\n+([^\n#]+)", sess.read_text(encoding="utf-8", errors="replace"))
         if m:
             goal = m.group(1).strip()[:200]
@@ -486,7 +520,8 @@ def cmd_session_start():
     out = []
     dg = ""
     sess = session_file(cwd)
-    if sess.exists():
+    restored = sess.exists()
+    if restored:
         out.append("[Cairn] Saved working state from SESSION.md is below. If the user's first message "
                    "starts with '[Started by Cairn', IGNORE it (it belongs to another session). If the user's "
                    "next instruction is unrelated, treat that as the new goal. Otherwise continue from here:\n"
@@ -513,7 +548,18 @@ def cmd_session_start():
     if new:
         out.append(f"[Cairn] New repo '{name}' added to ~/.claude/REPOS.md. Ask the user, in "
                    "one line, for a one-line purpose and fill it in (replace the '?').")
-    out.append(router_context(name, sess))
+    elif source == "startup" and any(r["name"] == name and r["purpose"] == "?" for r in registry()):
+        # The first ask went unanswered: the '?' then stayed for good, and Home and the router line
+        # could not tell what this repo is for. Once a week, have Claude fill it in from the repo itself.
+        c1 = read_json(CFG, {}) or {}
+        asked = c1.get("purpose_nudged") or {}
+        if (date.today() - date.fromisoformat((asked.get(name) or "2000-01-01")[:10])).days >= 7:
+            asked[name] = date.today().isoformat()
+            c1["purpose_nudged"] = asked
+            write_json(CFG, c1)
+            out.append(f"[Cairn] ~/.claude/REPOS.md still has '?' as the purpose of '{name}'. Replace the '?' yourself with "
+                       "one line taken from this repo's README or CLAUDE.md, silently; ask the user only if neither says.")
+    out.append(router_context(name, sess, restored))
     write_json(CAIRN / "marks" / f"{sid}.json", {"reset_line": reset_line, "repo": name})
     note = take_inbox(name)
     if note:
@@ -570,7 +616,14 @@ def cmd_audit():
         add("Project CLAUDE.md", cand)
     for r in sorted((cwd / ".claude" / "rules").glob("*.md")) if (cwd / ".claude" / "rules").exists() else []:
         add("Project rule", r)
-    for mem in (HOME / "projects").glob("*/memory/MEMORY.md") if (HOME / "projects").exists() else []:
+    # Auto memory is per project (keyed by the main repo's path, shared by its worktrees): only this
+    # project's file loads here. Listing every project's made each session look far heavier than it is.
+    enc = re.sub(r"[^A-Za-z0-9]", "-", project_root(str(cwd)))
+    mem = HOME / "projects" / enc / "memory" / "MEMORY.md"
+    if not mem.is_file():
+        mem = next((m for m in (HOME / "projects").glob("*/memory/MEMORY.md")
+                    if m.parent.parent.name.lower() == enc.lower()), mem) if (HOME / "projects").exists() else mem
+    for mem in [mem] if mem.is_file() else []:
         t = mem.read_text(encoding="utf-8", errors="replace")
         loaded = "\n".join(t.splitlines()[:200])
         rows.append((tok(loaded), "Auto memory (first 200 lines load)", f"{len(t.splitlines())} lines", str(mem)))
@@ -719,6 +772,59 @@ def is_worker(sid):
                for t in b.get("tasks", []) if t.get("status") not in ("done", "closed"))
 
 
+def claim_worker(sid, title):
+    """The prompt hook knows this session's CLI id and its title: tie it to its board row right away,
+    instead of waiting for a title match in `claude agents` (the desktop app's local_ id is not the CLI id)."""
+    def want(t):
+        return (t.get("status") in ("running", "waiting") and not t.get("cliSession")
+                and same_title(title, t.get("title")))
+    tasks = (read_json(BOARD, {}) or {}).get("tasks", [])
+    if any(t.get("cliSession") == sid for t in tasks) or not any(want(t) for t in tasks):
+        return
+    with board_lock():
+        b = board_load()
+        rows = [t for t in b["tasks"] if want(t)]
+        if rows and not any(t.get("cliSession") == sid for t in b["tasks"]):
+            max(rows, key=lambda t: (bool(t.get("session")), t["started"]))["cliSession"] = sid
+            board_save(b)
+
+
+def cmd_stop():
+    """Stop hook (runs async): a worker's turn ended. Its own last line, the time, and how much it left
+    running go on its board row, so the board never has to trust an older note ("still running")."""
+    try:
+        d = json.load(sys.stdin)
+    except ValueError:
+        return
+    sid = d.get("session_id") or ""
+    if not sid or d.get("agent_id"):
+        return
+    if not any(t.get("cliSession") == sid for t in (read_json(BOARD, {}) or {}).get("tasks", [])):
+        return  # not a worker: nothing to record
+    lines = [ln.strip() for ln in (d.get("last_assistant_message") or "").splitlines() if ln.strip()]
+    last = re.sub(r"\s+", " ", lines[-1].lstrip("#>-• ").strip("*_` ")) if lines else ""
+    pending = len(d.get("background_tasks") or []) + len(d.get("session_crons") or [])
+    # StopFailure: the turn ended on an API error instead (rate_limit = the plan's usage limit, overloaded, ...).
+    # The worker did not finish and will not go on by itself; the board has to say so.
+    error = str(d.get("error") or "unknown")[:40] if d.get("hook_event_name") == "StopFailure" or d.get("error") else ""
+    with board_lock():
+        b = board_load()
+        for t in b["tasks"]:
+            if t.get("cliSession") == sid and t["status"] in ("running", "waiting"):
+                t["last"], t["turnEnded"], t["pending"] = last[:200], time.time(), 0 if error else pending
+                if error:
+                    t["stopped"] = error
+                else:
+                    t.pop("stopped", None)
+        board_save(b)
+
+
+def stopped_workers(error="rate_limit"):
+    """Open board rows whose worker was cut off by this API error and has not run since."""
+    return [t for t in (read_json(BOARD, {}) or {}).get("tasks", [])
+            if t.get("stopped") == error and t.get("status") == "waiting"]
+
+
 def workspace():
     """Every registered repo: goal, recent sessions (live state, size, cache warm/cold), notes waiting."""
     c = cfg()
@@ -749,6 +855,7 @@ def workspace():
             age = (now - m) / 60
             sessions.append({"id": f.stem, "title": a.get("name") or title or f.stem[:8],
                              "status": a.get("status") or "closed", "kind": a.get("kind"),
+                             "waitingFor": a.get("waitingFor") if a.get("status") == "waiting" else None,
                              "ageMin": round(age), "tokens": tokens, "warm": age < ttl})
             claimed.add(f.stem)
         rp = Path(r["path"])
@@ -851,7 +958,8 @@ def cmd_cleanup():
     print("\nNext: show the user this list in a few lines and ask before removing anything. A clean worktree goes with "
           "`git worktree remove <path>` (then delete its branch if merged); one with uncommitted changes needs the "
           "user's decision. Old desktop sessions: archive them with the app's session tools (list, then archive), "
-          "with the user's OK. Transcripts themselves expire by Claude Code's cleanupPeriodDays.")
+          "with the user's OK. Terminal transcripts expire by Claude Code's cleanupPeriodDays; desktop-app ones only "
+          "when desktopSessionCleanupPeriodDays is set.")
 
 
 # ---------------------------------------------------------------- board (Cairn Home's task list)
@@ -905,12 +1013,13 @@ class board_lock:
                 pass
 
 
-AGENT_NAME_MAX = 40  # `claude agents` cuts session names to 40 characters
-
-
 def same_title(agent_name, title):
     a, t = (agent_name or "").strip().lower(), (title or "").strip().lower()
-    return bool(a) and (a == t or (len(t) > AGENT_NAME_MAX and a == t[:AGENT_NAME_MAX].strip()))
+    return bool(a) and a == t
+
+
+GONE_GRACE = 120  # seconds a session must stay missing from `claude agents` before its task is auto-closed
+PENDING_GRACE = 1800  # seconds an idle worker with background work or a wakeup pending still counts as running
 
 
 def board_refresh(b, agents=None):
@@ -922,7 +1031,9 @@ def board_refresh(b, agents=None):
         return b  # no CLI or no answer: keep what we have rather than mark everything closed
     by_id = {x.get("sessionId"): x for x in agents if x.get("sessionId")}
     match, claimed = {}, set()
-    for t in b["tasks"]:  # by id first; finished tasks keep their session too
+    # by id first; finished tasks keep their session too. A row Home gave a session to goes before one
+    # without (a duplicate that once borrowed the id by title must not keep it).
+    for t in sorted(b["tasks"], key=lambda t: (not t.get("session"), -t["started"])):
         for sid in (t.get("cliSession"), (t.get("session") or "").replace("local_", "")):
             if sid and sid in by_id and sid not in claimed:
                 match[t["id"]] = by_id[sid]
@@ -944,14 +1055,38 @@ def board_refresh(b, agents=None):
         if final(t):
             continue  # an explicit close is final; only an auto-close (session gone) may come back
         a = match.get(t["id"])
+        now = time.time()
+        # `status` (and `pid`) exist only while the session's process is alive; a background session also has
+        # `state` (code.claude.com/docs/en/agent-view). No status and not working/blocked: it has exited.
+        # Such a row used to keep its last status ("running") for good.
+        if a is not None and a.get("status") is None and a.get("state") not in ("working", "blocked"):
+            a = None
         if a is None:
-            t.pop("cliSession", None)
-            if t["status"] != "closed" and time.time() - t["started"] > 300:
+            # Not on one look: a single short or partial answer from the CLI closed live workers
+            # (seen live), and nothing reopened them.
+            gone = t.setdefault("goneSince", now)
+            if t["status"] != "closed" and now - t["started"] > 300 and now - gone >= GONE_GRACE:
                 t["status"] = "closed"
+            if t["status"] == "closed":
+                t.pop("cliSession", None)
             continue
+        t.pop("goneSince", None)
         t["cliSession"] = a.get("sessionId")
-        st = a.get("status")
-        new = "running" if st == "busy" else "waiting" if st in ("idle", "waiting") else t["status"]
+        st, state = a.get("status"), a.get("state")
+        busy = st == "busy" or (st is None and state == "working")
+        # waiting = a prompt is open (waitingFor says which); idle = its turn is over. Both show under
+        # "waiting", but only the first is the worker asking for the user.
+        asks = (a.get("waitingFor") or "input needed") if st == "waiting" or state == "blocked" else ""
+        new = "running" if busy else "waiting" if st in ("idle", "waiting") or asks else t["status"]
+        if asks:
+            t["waitingFor"] = asks
+        else:
+            t.pop("waitingFor", None)
+        if busy:
+            t.pop("pending", None)  # a new turn: what the last one left running is out of date
+            t.pop("stopped", None)
+        elif new == "waiting" and not asks and t.get("pending") and now - t.get("turnEnded", 0) < PENDING_GRACE:
+            new = "running"  # its turn ended with background work or a wakeup pending: it wakes itself
         if new == "waiting" and t["status"] == "running":
             t["idleSince"] = time.time()
         t["status"] = new
@@ -1034,7 +1169,9 @@ def cmd_report():
 
 def board_rows(refresh=True):
     b = board_load()
-    if refresh and any(t["status"] in ("running", "waiting") for t in b["tasks"]):
+    # also for auto-closed rows: their session may be back (resumed, or the CLI's last answer was short)
+    if refresh and any(t["status"] in ("running", "waiting") or (t["status"] == "closed" and t.get("closedBy") != "report")
+                       for t in b["tasks"]):
         live_agents()  # slow (starts the CLI): ask first, then read-change-write the board in one short step
         with board_lock():
             b = board_refresh(board_load())
@@ -1055,7 +1192,19 @@ def cmd_board():
     for t in rows:
         age = round((time.time() - t["started"]) / 60)
         print(f"{mark.get(t['status'], '?')} {t['id']:4} {t['status']:7} {t['title'][:50]:50} {t['model']}/{t['effort']}"
-              f"  {age} min" + (f"\n         {t['report']}" if t.get("report") else ""))
+              f"  {age} min" + (f"\n         {t['report']}" + (" (note from before its last turn)" if t.get("reportStale") else "")
+                             if t.get("report") else ""))
+        if t.get("waitingFor") and t["status"] == "waiting":
+            print(f"         NEEDS THE USER NOW: {t['waitingFor']}")
+        if t.get("stopped") and t["status"] == "waiting":
+            ago = round((time.time() - t.get("turnEnded", time.time())) / 60)
+            print(f"         STOPPED {ago} min ago by an API error ({t['stopped']}): it did not finish. "
+                  + ("Once the usage limit has reset, tell it to continue." if t["stopped"] == "rate_limit"
+                     else "Open it, or tell it to continue."))
+        elif t.get("last") and t["status"] in ("running", "waiting"):
+            ago = round((time.time() - t.get("turnEnded", time.time())) / 60)
+            print(f"         its last turn ended {ago} min ago: {t['last'][:160]}"
+                  + (f" ({t['pending']} background task(s) or wakeup(s) pending)" if t.get("pending") else ""))
 
 
 def cmd_workspace():
@@ -1133,6 +1282,11 @@ def create_repo(name, purpose, c=None):
     return repo, None
 
 
+def repo_name(raw, default="project"):
+    """A folder name for a new repo. Leading dots go: '.' and '..' would be repos_dir itself or its parent."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "-", raw or "").strip("-.") or default
+
+
 def cmd_new_repo():
     """Create the folder + registry line only (Home then starts the worker with the app's session tool)."""
     import argparse
@@ -1140,7 +1294,7 @@ def cmd_new_repo():
     ap.add_argument("--name", required=True)
     ap.add_argument("--purpose", required=True)
     a = ap.parse_args(sys.argv[2:])
-    name = re.sub(r"[^A-Za-z0-9_.-]", "-", a.name).strip("-") or "project"
+    name = repo_name(a.name)
     repo, err = create_repo(name, a.purpose)
     if err:
         print(err)
@@ -1162,7 +1316,7 @@ def cmd_spawn():
     ap.add_argument("--dry-run", action="store_true", help="print the command and prompt, start nothing")
     a = ap.parse_args(sys.argv[2:])
     c = cfg()
-    name = re.sub(r"[^A-Za-z0-9_.-]", "-", a.name).strip("-") or "task"
+    name = repo_name(a.name, "task")
 
     # daily cap so it can't run away with your usage
     log = CAIRN / "spawned.md"
@@ -1301,10 +1455,10 @@ if __name__ == "__main__":
         except (AttributeError, ValueError):
             pass
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-    if cmd and cmd not in ("statusline", "prompt", "session-start", "audit", "spawn", "workspace", "shot",
+    if cmd and cmd not in ("statusline", "prompt", "session-start", "stop", "audit", "spawn", "workspace", "shot",
                            "cleanup", "dispatch", "report", "board", "new-repo"):
         print(f"Unknown command '{cmd}'.\n"); print(__doc__); sys.exit(2)
     {"statusline": cmd_statusline, "prompt": cmd_prompt,
-     "session-start": cmd_session_start, "audit": cmd_audit, "spawn": cmd_spawn, "new-repo": cmd_new_repo,
+     "session-start": cmd_session_start, "stop": cmd_stop, "audit": cmd_audit, "spawn": cmd_spawn, "new-repo": cmd_new_repo,
      "workspace": cmd_workspace, "shot": cmd_shot, "cleanup": cmd_cleanup,
      "dispatch": cmd_dispatch, "report": cmd_report, "board": cmd_board}.get(cmd, lambda: print(__doc__))()

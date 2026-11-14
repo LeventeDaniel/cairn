@@ -29,7 +29,7 @@ def run(m, *argv, stdin=None):
         sys.stdin = io.StringIO(json.dumps(stdin))
     try:
         with redirect_stdout(out):
-            {"dispatch": m.cmd_dispatch, "report": m.cmd_report, "board": m.cmd_board,
+            {"dispatch": m.cmd_dispatch, "stop": m.cmd_stop, "report": m.cmd_report, "board": m.cmd_board,
              "prompt": m.cmd_prompt, "new-repo": m.cmd_new_repo, "session-start": m.cmd_session_start}[argv[0]]()
     finally:
         sys.stdin = old
@@ -86,6 +86,7 @@ class Board(unittest.TestCase):
         self.m.BOARD.write_text(json.dumps(b))
         self.m._AGENTS = [{"sessionId": "u1", "name": "example-a: fix login", "status": "idle",
                            "startedAt": time.time() * 1000}]
+        self.m.GONE_GRACE = 0
         rows = {r["id"]: r for r in json.loads(run(self.m, "board", "--json"))}
         self.assertEqual(rows["t1"]["status"], "waiting")
         self.assertEqual(rows["t1"]["cliSession"], "u1")
@@ -163,10 +164,27 @@ class Hooks(unittest.TestCase):
         st.write_text(json.dumps({**base, "five_hour_resets": time.time() + 600}))
         (self.m.CAIRN / "nag" / "u1.json").unlink()
         self.assertIn("Plan usage is high", self.prompt("u1", self.repo, "carry on"))
+        st.write_text(json.dumps({**base, "t": time.time() - 6 * 3600}))  # the mod's state: no reset time, hours old
+        (self.m.CAIRN / "nag" / "u1.json").unlink()
+        self.assertNotIn("Plan usage", self.prompt("u1", self.repo, "carry on"))
 
     def test_non_worker_low_context_says_nothing_about_home(self):
         out = self.prompt("other", self.repo, "also please redesign the marketing website header banner colours today")
         self.assertNotIn("Cairn Home", out)
+
+    def test_restored_goal_is_not_repeated_in_the_router_line(self):
+        out = run(self.m, "session-start", stdin={"session_id": "r1", "cwd": str(self.repo), "source": "resume"})
+        self.assertEqual(out.count("Ship the invoice exporter"), 1)
+        self.assertIn("goal: in SESSION.md above", out)
+
+    def test_unknown_purpose_is_filled_in_by_claude_once_a_week(self):
+        self.m.REGISTRY.write_text(f"# Repo registry\n- example-a | {self.repo} | ? | active | 2026-01-01\n")
+        start = lambda: run(self.m, "session-start", stdin={"session_id": "r2", "cwd": str(self.repo), "source": "startup"})
+        self.assertIn("still has '?' as the purpose of 'example-a'", start())
+        self.assertNotIn("still has '?'", start())  # not again this week
+        self.m.REGISTRY.write_text(f"# Repo registry\n- example-a | {self.repo} | invoices | active | 2026-01-01\n")
+        self.m.CFG.write_text("{}")
+        self.assertNotIn("still has '?'", start())  # a purpose is there: nothing to ask
 
     def test_home_session_start_skips_registry(self):
         self.m.HOME_DIR.mkdir(parents=True)

@@ -6,7 +6,7 @@
 
 Works on macOS, Linux and Windows. Needs only Python 3.
 """
-import json, os, re, shutil, sys
+import json, os, re, shutil, sys, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -49,11 +49,62 @@ def load_settings():
     return {}
 
 
+def write_atomic(path, text):
+    """Write next to the target, then swap it in: a session reading settings.json or running cairn.py
+    mid-install must never see half a file."""
+    tmp = path.with_name(path.name + ".cairn-tmp")
+    tmp.write_text(text, encoding="utf-8")
+    for i in range(8):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:  # Windows: a running hook has the old file open for a moment
+            if i == 7:
+                raise
+            time.sleep(0.05 * (i + 1))
+
+
 def save_settings(s):
     bak = SETTINGS.with_suffix(".json.cairn-bak")
     if SETTINGS.exists() and not bak.exists():
         shutil.copy2(SETTINGS, bak)
-    SETTINGS.write_text(json.dumps(s, indent=2) + "\n", encoding="utf-8")
+    write_atomic(SETTINGS, json.dumps(s, indent=2) + "\n")
+
+
+def mod_behind():
+    """A line to print when the Cairn mod (a plugin, which install.py does not manage) is older than this
+    checkout's, else "". Without it a stale pane went unnoticed.
+    A plugin from a marketplace added as a local folder is loaded in place from that folder at every session
+    start and never copied (code.claude.com/docs/en/plugins/loading), so there the folder is what counts."""
+    try:
+        here = json.loads((HERE.parent / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
+        rows = json.loads((HOME / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))["plugins"]
+        key = lambda v: [int(x) if x.isdigit() else 0 for x in str(v).split(".")]
+        try:
+            markets = json.loads((HOME / "plugins" / "known_marketplaces.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            markets = {}
+        for pid, installs in rows.items():
+            name, _, market = pid.partition("@")
+            if name != "cairn" or not installs:
+                continue
+            src = (markets.get(market) or {}).get("source") or {}
+            if src.get("source") in ("directory", "file") and src.get("path"):
+                folder = Path(src["path"])
+                if folder.resolve() == HERE.parent.resolve():
+                    return ""
+                have = json.loads((folder / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
+                if key(have) < key(here):
+                    return (f"The Cairn mod (pane, compaction) is loaded in place from {folder}, which has {have}; this "
+                            f"checkout has {here}. Bring that folder up to date (git pull there); new sessions pick it up.")
+                return ""
+            have = installs[0].get("version")
+            if have and key(have) < key(here):
+                return (f"The Cairn mod (pane, compaction) installed as a plugin is {have}; this checkout has {here}. "
+                        f"Update it: claude plugin update {pid}")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    return ""
 
 
 def strip_hooks(s):
@@ -87,7 +138,8 @@ def install():
     migrate()
     CAIRN.mkdir(parents=True, exist_ok=True)
     (HOME / "inbox").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(HERE / "cairn.py", CAIRN / "cairn.py")
+    write_atomic(CAIRN / "cairn.py", (HERE / "cairn.py").read_text(encoding="utf-8"))
+    shutil.copymode(HERE / "cairn.py", CAIRN / "cairn.py")
     (CAIRN / "home").mkdir(parents=True, exist_ok=True)  # Cairn Home: open a Code-tab session in this folder
     (CAIRN / "home" / "CLAUDE.md").write_text(
         (HERE / "home" / "CLAUDE.md").read_text(encoding="utf-8").replace("{{CAIRN}}", cmd("").strip()), encoding="utf-8")
@@ -113,6 +165,10 @@ def install():
     hooks = s.setdefault("hooks", {})
     hooks.setdefault("UserPromptSubmit", []).append({"hooks": [{"type": "command", "command": cmd("prompt")}]})
     hooks.setdefault("SessionStart", []).append({"hooks": [{"type": "command", "command": cmd("session-start")}]})
+    # async: it only writes a board row, the turn must not wait for it
+    hooks.setdefault("Stop", []).append({"hooks": [{"type": "command", "command": cmd("stop"), "async": True}]})
+    # the turn ended on an API error (the usage limit, overload): the same command marks the board row "stopped"
+    hooks.setdefault("StopFailure", []).append({"hooks": [{"type": "command", "command": cmd("stop"), "async": True}]})
     old = s.get("statusLine")
     if old and not is_ours(old):
         cfg["chain_statusline"] = old.get("command")      # keep the user's status line and show both
@@ -137,6 +193,9 @@ def install():
     block = (HERE / "CLAUDE-block.md").read_text(encoding="utf-8").strip().replace("{{SPAWN}}", cmd("spawn"))
     CLAUDE_MD.write_text((md + "\n\n" if md else "") + block + "\n", encoding="utf-8")
     print("Cairn installed. Start a new Claude Code session (or restart the Code tab) to load it.")
+    behind = mod_behind()
+    if behind:
+        print(behind)
 
 
 def uninstall():

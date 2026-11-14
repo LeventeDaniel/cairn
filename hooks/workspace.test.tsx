@@ -35,6 +35,7 @@ const WS = {
 }
 
 const afters: number[] = []
+const writes: string[] = []
 const toasts: string[] = []
 let cwdNow = 'C:/r/example-a'
 
@@ -50,7 +51,7 @@ function engine(on: any, settings: Record<string, unknown>, long = { n: 0 }) {
   on('process.run', (_: any, e: any) => { runs.push([...e.argv]); return { value: { exitCode: 0, stdout: JSON.stringify(WS), stderr: '' } } })
   on('fs.read', () => ({ value: '{}' }))
   on('fs.list', () => ({ value: [] }))
-  on('fs.write', () => ({ value: undefined }))
+  on('fs.write', (_: any, e: any) => { writes.push(String(e.path)); return { value: undefined } })
   on('store.get', () => ({ value: undefined }))
   on('store.set', () => ({ value: undefined }))
   on('ui.toast', (_: any, e: any) => { toasts.push(e.text); return { value: undefined } })
@@ -217,4 +218,16 @@ test('the pane lists stale worktrees and old sessions, flagging uncommitted work
   const t = (await ui.find({ type: 'Text', text: /Stale:/ }))?.text
   expect(t).toContain('example-b 1 worktree(s) (uncommitted!), 3 old session(s)')
   await ui.unmount()
+})
+
+test('state goes where the Cairn hook lives, not into the folder the mod is loaded from', async ($, on) => {
+  // Loaded in place from a checkout, the mod's own folder is not under ~/.claude: state/ ended up inside the repo.
+  writes.length = 0
+  engine(on, { hooks: HOOKS })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ turnId: 't', text: 'go' } as any)
+  await $.turn.complete({ turnId: 't', reason: 'answer', answer: 'done', durationMs: 1, isAborted: false } as any)
+  await settle()
+  expect(writes.length).toBeGreaterThan(0)
+  expect(writes.filter(w => !w.replace(/\\/g, '/').startsWith('C:/Users/me/.claude/cairn/'))).toEqual([])
 })

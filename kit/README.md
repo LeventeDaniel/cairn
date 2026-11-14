@@ -28,14 +28,16 @@ Cairn pane: `claude plugin install cairn@cairn`
 
 ## Keep every computer in sync (recommended)
 Put this folder in a private git repo, clone it to `~/.claude/cairn/kit-repo` on each computer,
-and run `python3 install.py` from there. Updates: `git pull && python3 install.py`.
+and run `python3 install.py` from there. Updates: `git pull && python3 install.py`, then
+`claude plugin update cairn@cairn` if you use the mod. A mod added from a local folder is loaded in place from that
+folder instead, so keep that folder up to date. The installer says which applies when the mod is older than the checkout.
 
 ## What you do
 Nothing, mostly. With the Cairn mod installed, context is compacted at clean breaks; without it,
 type `/clear` when Cairn tells you. A weekly check for new Claude Code features and a weekly
 tidy-up offer come once a week per computer.
 
-Skills: `/handoff`, `/pass`, `/repos`, `/where-to-run`, `/context-audit`, `/skill-scout`, `/cairn-update`, `dispatch` (Home's routine).
+Skills: `/handoff`, `/pass`, `/repos`, `/where-to-run`, `/context-audit`, `/skill-scout`, `/cairn-update`, `route` (where a new instruction runs), `dispatch` (Home's routine).
 
 ## Cairn Home (one place to type new work)
 Open a new Code-tab session in `~/.claude/cairn/home` and just say what you want. Home never does the work: it
@@ -63,7 +65,7 @@ new task send it to Home. At most `max_running` (3) workers run; the rest wait a
 | `cleanup [--json]` | stale worktrees (no commit for `stale_days`) and old closed sessions; reports only, removes nothing |
 | `spawn --where bg/cloud --name N --task T [--repo P] [--new-repo PURPOSE] [--from-session S] [--dry-run]` | start a session elsewhere (`--dry-run` prints the command and prompt) |
 | `audit` | what loads into every session, in tokens |
-| `statusline`, `prompt`, `session-start` | the hooks themselves |
+| `statusline`, `prompt`, `session-start`, `stop` | the hooks themselves (`stop` puts a worker's own last line on its board row) |
 
 ## Tuning (`~/.claude/cairn/config.json`)
 `warn`, `urgent`, `tool_results`, `usage_warn`, `repeat_every`, `max_spawns_per_day` (6),

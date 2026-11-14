@@ -59,6 +59,8 @@ export type WsSession = {
   /** busy, idle or waiting while it runs (from `claude agents`); closed otherwise */
   status: string
   kind?: string | null
+  /** the open prompt when status is 'waiting' (permission prompt, input needed, …) */
+  waitingFor?: string | null
   ageMin: number
   tokens?: number | null
   /** last activity inside the prompt cache TTL */
@@ -83,8 +85,21 @@ export type BoardTask = {
   id: string; repo: string; title: string; kind: string; model: string; effort: string
   session: string; cliSession?: string
   status: 'running' | 'waiting' | 'done' | 'queued' | 'closed'
-  started: number; updated: number; report: string; reportStale?: boolean
+  started: number; updated: number; report: string
+  /** set while the worker has a prompt open for the user (permission prompt, input needed, …) */
+  waitingFor?: string
+  /** the note is older than the worker's last turn end */
+  reportStale?: boolean
+  /** from the worker's own Stop hook: the last line it said, when (epoch s), and background tasks/wakeups it left pending */
+  last?: string; turnEnded?: number; pending?: number
+  /** set when an API error ended its last turn (rate_limit = the plan's usage limit); it will not go on by itself */
+  stopped?: string
 }
+
+/** One line of the savings ledger (~/.claude/cairn/state/ledger.json). */
+export type LedgerEvent =
+  | { kind: 'compaction'; t: number; sid: string; by: 'cairn' | 'app'; before?: number; after?: number; cold?: boolean }
+  | { kind: 'cache-warning'; t: number; sid: string; source: 'cold' | 'guard'; tokens: number }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -95,7 +110,9 @@ declare module 'claude-code' {
       offer: Shaped<Offer | null>
       ws: Shaped<Workspace | null>
       details: Shaped<boolean>
-      ledger: Shaped<import('../hooks/ledger').LedgerEvent[]>
+      ledger: Shaped<LedgerEvent[]>
+      days: Shaped<Record<string, { usd: Record<string, number>; fh?: number; sd?: number }>>
+      measured: Shaped<string[]>
     }
   }
 }
