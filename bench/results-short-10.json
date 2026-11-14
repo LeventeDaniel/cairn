@@ -1,0 +1,154 @@
+{
+ "runs": 8,
+ "model": "sonnet",
+ "off": {
+  "usd": 0.098249575,
+  "turns": 2.5,
+  "ctxAvg": 40884.9,
+  "cacheRead": 80470.75,
+  "cacheWrite": 21737.25,
+  "out": 324.5
+ },
+ "on": {
+  "usd": 0.10486680000000001,
+  "turns": 2.5,
+  "ctxAvg": 38279.3,
+  "cacheRead": 72225.5,
+  "cacheWrite": 23468.75,
+  "out": 376.125
+ },
+ "raw": {
+  "off": [
+   {
+    "usd": 0.0848563,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 66243,
+    "cacheWrite": 18266,
+    "out": 516
+   },
+   {
+    "usd": 0.1031794,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 76354,
+    "cacheWrite": 22539,
+    "out": 538
+   },
+   {
+    "usd": 0.09813150000000001,
+    "turns": 2,
+    "fresh": 4,
+    "cacheRead": 76355,
+    "cacheWrite": 22102,
+    "out": 208
+   },
+   {
+    "usd": 0.09759580000000001,
+    "turns": 2,
+    "fresh": 4,
+    "cacheRead": 76358,
+    "cacheWrite": 22063,
+    "out": 170
+   },
+   {
+    "usd": 0.09882780000000001,
+    "turns": 2,
+    "fresh": 4,
+    "cacheRead": 76358,
+    "cacheWrite": 22141,
+    "out": 262
+   },
+   {
+    "usd": 0.0980566,
+    "turns": 2,
+    "fresh": 4,
+    "cacheRead": 76166,
+    "cacheWrite": 21953,
+    "out": 262
+   },
+   {
+    "usd": 0.1044422,
+    "turns": 3,
+    "fresh": 6,
+    "cacheRead": 125342,
+    "cacheWrite": 22174,
+    "out": 320
+   },
+   {
+    "usd": 0.10090700000000001,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 70590,
+    "cacheWrite": 22660,
+    "out": 320
+   }
+  ],
+  "on": [
+   {
+    "usd": 0.08138880000000001,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 67568,
+    "cacheWrite": 17326,
+    "out": 532
+   },
+   {
+    "usd": 0.1136447,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 71727,
+    "cacheWrite": 25201,
+    "out": 566
+   },
+   {
+    "usd": 0.1062739,
+    "turns": 2,
+    "fresh": 4,
+    "cacheRead": 77279,
+    "cacheWrite": 24127,
+    "out": 203
+   },
+   {
+    "usd": 0.1084103,
+    "turns": 2,
+    "fresh": 4,
+    "cacheRead": 71723,
+    "cacheWrite": 24795,
+    "out": 205
+   },
+   {
+    "usd": 0.1024391,
+    "turns": 2,
+    "fresh": 4,
+    "cacheRead": 71731,
+    "cacheWrite": 23107,
+    "out": 283
+   },
+   {
+    "usd": 0.10772090000000001,
+    "turns": 2,
+    "fresh": 4,
+    "cacheRead": 72589,
+    "cacheWrite": 24376,
+    "out": 295
+   },
+   {
+    "usd": 0.1104437,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 72597,
+    "cacheWrite": 24689,
+    "out": 442
+   },
+   {
+    "usd": 0.10861299999999999,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 72590,
+    "cacheWrite": 24129,
+    "out": 483
+   }
+  ]
+ }
+}
