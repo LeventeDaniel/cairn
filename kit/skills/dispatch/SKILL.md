@@ -23,6 +23,16 @@ description: Cairn Home's routine for every request - classify it, pick where it
 Unsure between two rows: the cheaper one. A follow-up on a task that already has a worker: tell the user to type it
 there (link the session), don't start another.
 
+## 1b. New project (no repo yet)
+Run `cairn.py new-repo --name <kebab-name> --purpose "<one line>"` first (REFUSED = name taken: pick another). Then
+continue below with `--repo <name>` and `cwd` = the path it printed. The app asks to trust the new folder once: tell
+the user in one line to click Allow/Trust on that card. Don't ask anything else.
+
+## 1b. New project (no repo yet)
+Run `cairn.py new-repo --name <kebab-name> --purpose "<one line>"` first (REFUSED = name taken: pick another). Then
+continue below with `--repo <name>` and `cwd` = the path it printed. The app asks to trust the new folder once: tell
+the user in one line to click Allow/Trust on that card. Don't ask anything else.
+
 ## 2. Board first
 `cairn.py dispatch --repo <name from REPOS.md> --title "<repo>: <task in 2-5 words>" --kind <kind>`
 - `OK t7 model=… effort=…` → go on.
