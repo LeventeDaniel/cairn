@@ -18,6 +18,11 @@ AGENTS = ["scout", "researcher", "architect", "Explore"]
 SKILLS = ["handoff", "pass", "repos", "context-audit", "skill-scout", "cairn-update", "where-to-run", "dispatch"]
 MARK = re.compile(r"\n?<!-- (?:context-coach|cairn):start -->.*?<!-- (?:context-coach|cairn):end -->\n?", re.S)
 OLD = HOME / "coach"  # Cairn was called Context Coach until 2026-11-13
+# Opt-in (`install.py --routine-allow`): checks and local git bookkeeping that never leave the machine or spend money.
+# Never push, install, delete or network commands. Removed again by --uninstall or by re-running without the flag.
+ROUTINE_ALLOW = ["Bash(python -m unittest:*)", "Bash(python3 -m unittest:*)", "Bash(python -m pytest:*)",
+                 "Bash(python3 -m pytest:*)", "Bash(pytest:*)", "Bash(git status:*)", "Bash(git diff:*)",
+                 "Bash(git log:*)", "Bash(git show:*)", "Bash(git add:*)", "Bash(git commit:*)"]
 AUTOCOMPACT = "80"  # compact at 80% instead of the default (~97% on 1M models)
 
 
@@ -115,6 +120,12 @@ def install():
     allow = s.setdefault("permissions", {}).setdefault("allow", [])
     allow[:] = [r for r in allow if not re.search(r"(cairn|coach)\.py (spawn|dispatch|report|board)", r)]
     allow.extend(f"Bash({cmd(c)}:*)" for c in ("spawn", "dispatch", "report", "board"))
+    ours = set(cfg.get("routine_allow", []))          # rules a previous --routine-allow run added (not the user's own)
+    allow[:] = [r for r in allow if r not in ours]
+    cfg["routine_allow"] = []
+    if "--routine-allow" in sys.argv:
+        cfg["routine_allow"] = [r for r in ROUTINE_ALLOW if r not in allow]
+        allow.extend(cfg["routine_allow"])
     s.setdefault("env", {}).setdefault("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", AUTOCOMPACT)
     cfg["set_autocompact"] = s["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == AUTOCOMPACT
     save_settings(s)
@@ -143,7 +154,9 @@ def uninstall():
             del s["env"]
     perms = s.get("permissions", {})
     if "allow" in perms:
-        perms["allow"] = [r for r in perms["allow"] if not re.search(r"cairn\.py (spawn|dispatch|report|board)", r)]
+        mine = set(cfg.get("routine_allow", []))
+        perms["allow"] = [r for r in perms["allow"]
+                          if not re.search(r"cairn\.py (spawn|dispatch|report|board)", r) and r not in mine]
         if not perms["allow"]:
             del perms["allow"]
         if not perms:
