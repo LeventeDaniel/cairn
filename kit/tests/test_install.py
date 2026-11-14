@@ -71,6 +71,19 @@ class Install(unittest.TestCase):
         self.assertFalse((repos / "my-new").exists())
         self.assertNotIn("my-new", (self.cl / "REPOS.md").read_text(encoding="utf-8"))
 
+    def test_stop_hook_is_installed_async_once_and_removed(self):
+        self.install()
+        self.install()
+        stop = json.loads((self.cl / "settings.json").read_text(encoding="utf-8"))["hooks"]["Stop"]
+        self.assertEqual(len(stop), 1)
+        h = stop[0]["hooks"][0]
+        self.assertTrue(h["command"].endswith("cairn.py stop"))
+        self.assertIs(h["async"], True)  # it only writes a board row: the turn must not wait for it
+        r = self.py(self.cl / "cairn" / "cairn.py", "stop", stdin=json.dumps({"session_id": "x", "last_assistant_message": "hi"}))
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))  # no board, not a worker: silent
+        self.install("--uninstall")
+        self.assertNotIn("hooks", json.loads((self.cl / "settings.json").read_text(encoding="utf-8")))
+
     def test_block_is_slim_and_routing_lives_in_the_route_skill(self):
         self.install()
         block = (self.cl / "CLAUDE.md").read_text(encoding="utf-8")

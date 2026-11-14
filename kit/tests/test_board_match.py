@@ -166,5 +166,82 @@ class Writes(unittest.TestCase):
         self.assertEqual(list((m.CAIRN / "state").glob("*.tmp")), [])
 
 
+class StopHook(unittest.TestCase):
+    """A worker's own turn-end record on its board row (Stop hook), instead of trusting an older note."""
+
+    def setUp(self):
+        self.m = load(Path(tempfile.mkdtemp()))
+        run(self.m, "dispatch", "--repo", "a", "--title", "a: long job", "--session", "local_j")
+
+    def row(self):
+        return json.loads(run(self.m, "board", "--json"))[0]
+
+    def stop(self, sid="u1", msg="Did the thing.\n\n**All 12 tests pass, pushed abc123.**", **extra):
+        run(self.m, "stop", stdin={"session_id": sid, "last_assistant_message": msg, **extra})
+
+    def test_prompt_hook_ties_the_session_to_its_row_by_title(self):
+        run(self.m, "prompt", stdin={"session_id": "u1", "cwd": str(self.m.HOME), "prompt": "go",
+                                     "session_title": "A: Long Job", "transcript_path": ""})
+        self.assertEqual(json.loads(self.m.BOARD.read_text())["tasks"][0]["cliSession"], "u1")
+        run(self.m, "prompt", stdin={"session_id": "u2", "cwd": str(self.m.HOME), "prompt": "go",
+                                     "session_title": "a: long job", "transcript_path": ""})
+        self.assertEqual(json.loads(self.m.BOARD.read_text())["tasks"][0]["cliSession"], "u1")  # taken: not handed over
+
+    def test_stop_records_the_workers_last_line(self):
+        self.m._AGENTS = [agent("u1", "a: long job", "busy")]
+        self.row()
+        run(self.m, "report", "t1", "--note", "still running")
+        self.stop()
+        self.m._AGENTS = [agent("u1", "a: long job", "idle")]
+        r = self.row()
+        self.assertEqual(r["status"], "waiting")
+        self.assertEqual(r["last"], "All 12 tests pass, pushed abc123.")
+        self.assertTrue(r["reportStale"])  # Home's "still running" note is older than the turn end
+        self.assertIn("its last turn ended", run(self.m, "board"))
+
+    def test_stop_from_a_session_that_is_no_worker_changes_nothing(self):
+        before = self.m.BOARD.read_text()
+        self.stop(sid="stranger")
+        self.assertEqual(self.m.BOARD.read_text(), before)
+
+    def test_idle_with_background_work_pending_is_running_until_it_goes_quiet(self):
+        self.m._AGENTS = [agent("u1", "a: long job", "busy")]
+        self.row()
+        self.stop(background_tasks=[{"id": "x", "type": "shell", "status": "running"}])
+        self.m._AGENTS = [agent("u1", "a: long job", "idle")]
+        self.assertEqual(self.row()["status"], "running")
+        b = json.loads(self.m.BOARD.read_text())
+        b["tasks"][0]["turnEnded"] -= 3600  # an hour of silence: the background run is probably dead
+        self.m.BOARD.write_text(json.dumps(b))
+        r = self.row()
+        self.assertEqual((r["status"], r["pending"]), ("waiting", 1))
+        self.m._AGENTS = [agent("u1", "a: long job", "busy")]   # a new turn clears what the old one left
+        self.assertNotIn("pending", self.row())
+
+
+class NotTyped(unittest.TestCase):
+    def test_a_message_from_another_session_is_not_a_topic_shift(self):
+        m = load(Path(tempfile.mkdtemp()))
+        repo = m.HOME / "r"
+        repo.mkdir(parents=True)
+        (repo / "SESSION.md").write_text("## Goal\nShip the invoice exporter\n")
+        text = "please redesign the marketing website header banner colours today instead"
+        self.assertTrue(m.topic_shift(text, repo))
+        self.assertEqual(m.topic_shift('Another Claude session sent a message:\n<cross-session-message from="x">' + text, repo), "")
+        self.assertEqual(m.topic_shift("<task-notification>" + text, repo), "")
+
+    def test_no_title_nudge_for_a_session_that_is_already_titled(self):
+        m = load(Path(tempfile.mkdtemp()))
+        os.environ["CLAUDE_CODE_ENTRYPOINT"] = "claude-desktop"
+        try:
+            base = {"cwd": str(m.HOME), "prompt": "go", "transcript_path": ""}
+            self.assertNotIn("Title", run(m, "prompt", stdin={**base, "session_id": "a1", "session_title": "cairn: audit gaps"}))
+            self.assertNotIn("title it", run(m, "prompt", stdin={**base, "session_id": "a1", "session_title": "cairn: audit gaps"}))
+            self.assertIn("title it", run(m, "prompt", stdin={**base, "session_id": "a2"}))
+            self.assertIn("title it", run(m, "prompt", stdin={**base, "session_id": "a3", "session_title": "New session"}))
+        finally:
+            os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -113,6 +113,8 @@ def install():
     hooks = s.setdefault("hooks", {})
     hooks.setdefault("UserPromptSubmit", []).append({"hooks": [{"type": "command", "command": cmd("prompt")}]})
     hooks.setdefault("SessionStart", []).append({"hooks": [{"type": "command", "command": cmd("session-start")}]})
+    # async: it only writes a board row, the turn must not wait for it
+    hooks.setdefault("Stop", []).append({"hooks": [{"type": "command", "command": cmd("stop"), "async": True}]})
     old = s.get("statusLine")
     if old and not is_ours(old):
         cfg["chain_statusline"] = old.get("command")      # keep the user's status line and show both

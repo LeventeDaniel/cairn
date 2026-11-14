@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { advice, health, needsAndRunning, sessionHref } from './panel'
+import { advice, health, needsAndRunning, sessionHref, waitingHint } from './panel'
 import type { Snap, Workspace } from '../types'
 
 const ws = (over: Partial<Workspace> = {}): Workspace => ({
@@ -35,4 +35,12 @@ test('savings show only with real ledger data; advice only when action is needed
   expect(advice(health(snap([{ kind: 'five_hour', percentUsed: 20 }]), [], 0, 80), snap([]))).toBeUndefined()
   expect(advice(health(snap([{ kind: 'five_hour', percentUsed: 85 }]), [], 0, 80), snap([]))).toMatch(/high/)
   expect(sessionHref('nope')).toBeUndefined()
+})
+
+test('a waiting task shows the worker\'s own last line once the note is older than its last turn', () => {
+  const base = { id: 't1', repo: 'r', title: 'r: job', kind: 'k', model: 'm', effort: 'e', session: 'local_j', status: 'waiting' as const, started: 0, updated: 0 }
+  expect(waitingHint({ ...base, report: 'needs your OK to push' }, 0)).toBe('needs your OK to push')
+  expect(waitingHint({ ...base, report: 'still running', reportStale: true, last: 'All tests pass, pushed.' }, 0)).toBe('Finished its turn: All tests pass, pushed.')
+  expect(waitingHint({ ...base, report: 'still running', reportStale: true }, 0)).toBe('Finished its turn: open it and check')
+  expect(waitingHint({ ...base, report: '', last: 'Started the run.', pending: 1, turnEnded: 60 }, 2760)).toBe('Quiet for 45 min with background work pending: check it')
 })

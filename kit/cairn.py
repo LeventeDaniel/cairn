@@ -5,6 +5,7 @@ Subcommands (wired up by install.py):
   statusline     status line: shows context %, usage; saves exact numbers for the hooks
   prompt         UserPromptSubmit hook: advises /clear, handoff, subagents, model choice
   session-start  SessionStart hook: restores SESSION.md, delivers inbox notes, keeps repo registry
+  stop           Stop hook: a worker's turn ended; its own last line goes on its board row
   audit          prints what loads into every session and how big it is
   spawn          lets Claude start a background/cloud session (or a new repo) on its own
   dispatch       Home: add a task to the board (checks the running cap, fills model/effort defaults)
@@ -195,10 +196,17 @@ def words(text):
     return {w for w in re.findall(r"[a-z][a-z0-9_-]{3,}", text.lower()) if w not in STOP}
 
 
+# UserPromptSubmit also fires for messages from other sessions, subagent reports and scheduled turns
+# (code.claude.com/docs/en/hooks). Those are not the user changing the subject.
+NOT_TYPED = ("<cross-session-message", "<task-notification", "<side-sessions-event", "<ci-monitor-event",
+             "<system-reminder", "Another Claude session sent a message")
+
+
 def topic_shift(prompt, cwd):
     """The session's goal when a substantial new prompt shares no word with goal or next steps; else ''."""
     pw = words(prompt)
-    if len(pw) < 6 or prompt.lstrip().startswith(("[", "<", "/")):
+    head = prompt.lstrip()[:600]
+    if len(pw) < 6 or head.startswith(("[", "<", "/")) or any(m in head for m in NOT_TYPED):
         return ""
     try:
         # The same file session-start restores: this checkout's own. In a git worktree the main
@@ -264,6 +272,9 @@ def cmd_prompt():
                      "skill yourself and suggest /clear in one line.")
     cwd = d.get("cwd") or os.getcwd()
     home = is_home(cwd)
+    title = (d.get("session_title") or "").strip()
+    if title and not home:
+        claim_worker(sid, title)
     shift = "" if home else topic_shift(d.get("prompt") or "", Path(cwd))
     worker = bool(shift) and is_worker(sid)
     if worker:
@@ -299,7 +310,9 @@ def cmd_prompt():
         marks["named"] = True
         write_json(CAIRN / "marks" / f"{sid}.json", marks)
         repo = marks.get("repo") or "this repo"
-        if home:
+        if title == HOME_TITLE if home else re.match(r"[^:\n]{1,40}: \S", title):
+            pass  # already titled (Home titles the workers it starts): no note, no tool call
+        elif home:
             print(f"[Cairn] Title this session '{HOME_TITLE}' with the app's session-title tool, silently. "
                   "Workers find Home by that title.")
         else:
@@ -719,6 +732,46 @@ def is_worker(sid):
                for t in b.get("tasks", []) if t.get("status") not in ("done", "closed"))
 
 
+def claim_worker(sid, title):
+    """The prompt hook knows this session's CLI id and its title: tie it to its board row right away,
+    instead of waiting for a title match in `claude agents` (the desktop app's local_ id is not the CLI id)."""
+    def want(t):
+        return (t.get("status") in ("running", "waiting") and not t.get("cliSession")
+                and same_title(title, t.get("title")))
+    tasks = (read_json(BOARD, {}) or {}).get("tasks", [])
+    if any(t.get("cliSession") == sid for t in tasks) or not any(want(t) for t in tasks):
+        return
+    with board_lock():
+        b = board_load()
+        rows = [t for t in b["tasks"] if want(t)]
+        if rows and not any(t.get("cliSession") == sid for t in b["tasks"]):
+            max(rows, key=lambda t: (bool(t.get("session")), t["started"]))["cliSession"] = sid
+            board_save(b)
+
+
+def cmd_stop():
+    """Stop hook (runs async): a worker's turn ended. Its own last line, the time, and how much it left
+    running go on its board row, so the board never has to trust an older note ("still running")."""
+    try:
+        d = json.load(sys.stdin)
+    except ValueError:
+        return
+    sid = d.get("session_id") or ""
+    if not sid or d.get("agent_id"):
+        return
+    if not any(t.get("cliSession") == sid for t in (read_json(BOARD, {}) or {}).get("tasks", [])):
+        return  # not a worker: nothing to record
+    lines = [ln.strip() for ln in (d.get("last_assistant_message") or "").splitlines() if ln.strip()]
+    last = re.sub(r"\s+", " ", lines[-1].lstrip("#>-• ").strip("*_` ")) if lines else ""
+    pending = len(d.get("background_tasks") or []) + len(d.get("session_crons") or [])
+    with board_lock():
+        b = board_load()
+        for t in b["tasks"]:
+            if t.get("cliSession") == sid and t["status"] in ("running", "waiting"):
+                t["last"], t["turnEnded"], t["pending"] = last[:200], time.time(), pending
+        board_save(b)
+
+
 def workspace():
     """Every registered repo: goal, recent sessions (live state, size, cache warm/cold), notes waiting."""
     c = cfg()
@@ -911,6 +964,7 @@ def same_title(agent_name, title):
 
 
 GONE_GRACE = 120  # seconds a session must stay missing from `claude agents` before its task is auto-closed
+PENDING_GRACE = 1800  # seconds an idle worker with background work or a wakeup pending still counts as running
 
 
 def board_refresh(b, agents=None):
@@ -960,6 +1014,10 @@ def board_refresh(b, agents=None):
         t["cliSession"] = a.get("sessionId")
         st = a.get("status")
         new = "running" if st == "busy" else "waiting" if st in ("idle", "waiting") else t["status"]
+        if st == "busy":
+            t.pop("pending", None)  # a new turn: what the last one left running is out of date
+        elif new == "waiting" and t.get("pending") and now - t.get("turnEnded", 0) < PENDING_GRACE:
+            new = "running"  # its turn ended with background work or a wakeup pending: it wakes itself
         if new == "waiting" and t["status"] == "running":
             t["idleSince"] = time.time()
         t["status"] = new
@@ -1065,7 +1123,12 @@ def cmd_board():
     for t in rows:
         age = round((time.time() - t["started"]) / 60)
         print(f"{mark.get(t['status'], '?')} {t['id']:4} {t['status']:7} {t['title'][:50]:50} {t['model']}/{t['effort']}"
-              f"  {age} min" + (f"\n         {t['report']}" if t.get("report") else ""))
+              f"  {age} min" + (f"\n         {t['report']}" + (" (note from before its last turn)" if t.get("reportStale") else "")
+                             if t.get("report") else ""))
+        if t.get("last") and t["status"] in ("running", "waiting"):
+            ago = round((time.time() - t.get("turnEnded", time.time())) / 60)
+            print(f"         its last turn ended {ago} min ago: {t['last'][:160]}"
+                  + (f" ({t['pending']} background task(s) or wakeup(s) pending)" if t.get("pending") else ""))
 
 
 def cmd_workspace():
@@ -1311,10 +1374,10 @@ if __name__ == "__main__":
         except (AttributeError, ValueError):
             pass
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-    if cmd and cmd not in ("statusline", "prompt", "session-start", "audit", "spawn", "workspace", "shot",
+    if cmd and cmd not in ("statusline", "prompt", "session-start", "stop", "audit", "spawn", "workspace", "shot",
                            "cleanup", "dispatch", "report", "board", "new-repo"):
         print(f"Unknown command '{cmd}'.\n"); print(__doc__); sys.exit(2)
     {"statusline": cmd_statusline, "prompt": cmd_prompt,
-     "session-start": cmd_session_start, "audit": cmd_audit, "spawn": cmd_spawn, "new-repo": cmd_new_repo,
+     "session-start": cmd_session_start, "stop": cmd_stop, "audit": cmd_audit, "spawn": cmd_spawn, "new-repo": cmd_new_repo,
      "workspace": cmd_workspace, "shot": cmd_shot, "cleanup": cmd_cleanup,
      "dispatch": cmd_dispatch, "report": cmd_report, "board": cmd_board}.get(cmd, lambda: print(__doc__))()
