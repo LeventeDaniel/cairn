@@ -35,3 +35,23 @@ Measured from `claude -p --output-format json` (reported cost, real total ~0.05 
 
 Reading: Cairn did **not** save here; it cost slightly more (extra turns and output from its CLAUDE.md rules and hooks, +0.7k context per turn). Context per turn differs by only 2%, so the CLAUDE.md block is cheap; the extra cost comes from more turns/output. Caveats: n=4 per arm, one run each, one cheap model, tiny tasks where compaction never triggers (Cairn's main mechanism is untested), run-to-run noise on 3-turn tasks is large. Headless start context is ~36k, not the ~80k seen in the desktop app (that part is the app's own prompt).
 Verdict stands: not proven to save; on short tasks it costs a little more. Its value case (compaction, cold-cache warnings on long sessions) needs long-session data.
+
+## Round 2 (2026-11-14): why Cairn cost more, fixes, longer tasks
+**Cause found (kit, not the model):** the session-start hook registered every new folder (the bench's temp dirs) as a repo and told Claude to "ask the user for a one-line purpose". That produced extra output and turns in every scratch session (first run: output 1215 vs 553 tokens). Fix: kit commit `c79ad00` stops registering temp or non-git folders (test added). Also removed the 4 junk bench entries from REPOS.md. Tightened the Cairn CLAUDE.md block (`b01e3c3`: no commentary on plain task work, routing line only when routing).
+
+Re-run, Haiku, 3 arms (off / old block / lean block), n=12 short runs per arm and n=4 long runs per arm (long = 12-file audit, csv stats refactor; ~30 turns). Real spend about 0.4 USD total.
+
+| | off | old block | lean block |
+|---|---|---|---|
+| short: cost/run | $0.00586 | $0.00645 (+10%) | $0.00657 (+12%) |
+| short: output tokens | 663 | 763 | 763 |
+| short: cache write | 22.9k | 25.5k | 25.8k |
+| long: cost/run | $0.01346 | $0.01408 (+5%) | $0.01400 (+4%) |
+
+Reading:
+- The +24% shrank to about +10% after the registry fix. The rest is fixed injected context: about 2.6k extra cache-write tokens per session (CLAUDE.md block ~1.1k, router and hook notes). It shrinks to +4-5% on 30-turn tasks, because it is paid once.
+- The lean block changed nothing measurable (763 vs 763 output tokens); the difference between the two blocks is inside noise.
+- Hooks plus CLAUDE.md can only add cost; their benefit is behaviour (routing, handoff), not tokens. **Cairn does not save tokens by itself; it costs 4-10% extra fixed overhead.**
+- Where a saving could exist: compaction at clean breaks, idle past-TTL compaction, cache warnings. These are mod features and do not run under `claude -p` (no mod, and a 30-turn task never nears compaction), so they are NOT measured here. Their value is the ledger's estimate (10 later replies x removed tokens at the cache-read price), nothing more. The measured fact behind it: compactions in history removed a median 147k tokens and were followed by 15+ replies.
+- Not proven where it cannot be: a headless benchmark cannot show the mod's savings; that needs a week of ledger data from real sessions (Cairn-triggered vs app-triggered compactions).
+Caveats: Haiku only, tiny tasks, n small, haiku cost from the CLI's own reported total.

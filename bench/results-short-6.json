@@ -1,0 +1,324 @@
+{
+ "runs": 12,
+ "model": "haiku",
+ "off": {
+  "usd": 0.00586056,
+  "turns": 3.3333333333333335,
+  "ctxAvg": 35522.975,
+  "cacheRead": 95538.5,
+  "cacheWrite": 22866.583333333332,
+  "out": 662.75
+ },
+ "old": {
+  "usd": 0.006446858333333334,
+  "turns": 3.3333333333333335,
+  "ctxAvg": 36825.35,
+  "cacheRead": 97285.83333333333,
+  "cacheWrite": 25460.5,
+  "out": 762.8333333333334
+ },
+ "on": {
+  "usd": 0.0065667941666666665,
+  "turns": 3.5,
+  "ctxAvg": 36537.0,
+  "cacheRead": 102052.75,
+  "cacheWrite": 25821.75,
+  "out": 762.8333333333334
+ },
+ "raw": {
+  "off": [
+   {
+    "usd": 0.00462047,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 67067,
+    "cacheWrite": 18087,
+    "out": 664
+   },
+   {
+    "usd": 0.005601180000000001,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 76168,
+    "cacheWrite": 22488,
+    "out": 683
+   },
+   {
+    "usd": 0.005663120000000001,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 76172,
+    "cacheWrite": 22585,
+    "out": 768
+   },
+   {
+    "usd": 0.006168420000000001,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 125852,
+    "cacheWrite": 22669,
+    "out": 751
+   },
+   {
+    "usd": 0.00634923,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 127633,
+    "cacheWrite": 23614,
+    "out": 699
+   },
+   {
+    "usd": 0.00548065,
+    "turns": 2,
+    "fresh": 4,
+    "cacheRead": 76985,
+    "cacheWrite": 22837,
+    "out": 286
+   },
+   {
+    "usd": 0.006371869999999999,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 127367,
+    "cacheWrite": 23918,
+    "out": 628
+   },
+   {
+    "usd": 0.00636975,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 127515,
+    "cacheWrite": 23510,
+    "out": 784
+   },
+   {
+    "usd": 0.006328520000000001,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 127442,
+    "cacheWrite": 23445,
+    "out": 729
+   },
+   {
+    "usd": 0.00578884,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 71424,
+    "cacheWrite": 23686,
+    "out": 674
+   },
+   {
+    "usd": 0.00586571,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 71421,
+    "cacheWrite": 23848,
+    "out": 763
+   },
+   {
+    "usd": 0.00571896,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 71416,
+    "cacheWrite": 23712,
+    "out": 524
+   }
+  ],
+  "old": [
+   {
+    "usd": 0.00544891,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 69431,
+    "cacheWrite": 21646,
+    "out": 850
+   },
+   {
+    "usd": 0.006366050000000001,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 73945,
+    "cacheWrite": 26016,
+    "out": 846
+   },
+   {
+    "usd": 0.006421990000000001,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 73589,
+    "cacheWrite": 26216,
+    "out": 885
+   },
+   {
+    "usd": 0.006192540000000002,
+    "turns": 2,
+    "fresh": 4,
+    "cacheRead": 73584,
+    "cacheWrite": 25914,
+    "out": 547
+   },
+   {
+    "usd": 0.006954420000000001,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 124942,
+    "cacheWrite": 26762,
+    "out": 704
+   },
+   {
+    "usd": 0.00669626,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 131106,
+    "cacheWrite": 25313,
+    "out": 644
+   },
+   {
+    "usd": 0.0068923100000000005,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 131581,
+    "cacheWrite": 25607,
+    "out": 909
+   },
+   {
+    "usd": 0.00687574,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 131544,
+    "cacheWrite": 25571,
+    "out": 891
+   },
+   {
+    "usd": 0.0069156700000000005,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 126427,
+    "cacheWrite": 26039,
+    "out": 886
+   },
+   {
+    "usd": 0.00620366,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 78946,
+    "cacheWrite": 25354,
+    "out": 686
+   },
+   {
+    "usd": 0.00618549,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 78949,
+    "cacheWrite": 25323,
+    "out": 662
+   },
+   {
+    "usd": 0.00620926,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 73386,
+    "cacheWrite": 25765,
+    "out": 644
+   }
+  ],
+  "on": [
+   {
+    "usd": 0.006325280000000001,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 72618,
+    "cacheWrite": 26711,
+    "out": 513
+   },
+   {
+    "usd": 0.006400890000000001,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 79159,
+    "cacheWrite": 25692,
+    "out": 941
+   },
+   {
+    "usd": 0.0061294800000000005,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 79168,
+    "cacheWrite": 25367,
+    "out": 528
+   },
+   {
+    "usd": 0.006787020000000001,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 131602,
+    "cacheWrite": 25597,
+    "out": 702
+   },
+   {
+    "usd": 0.006806609999999999,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 131291,
+    "cacheWrite": 25483,
+    "out": 793
+   },
+   {
+    "usd": 0.0067944,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 131180,
+    "cacheWrite": 25925,
+    "out": 594
+   },
+   {
+    "usd": 0.00688862,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 126392,
+    "cacheWrite": 25983,
+    "out": 855
+   },
+   {
+    "usd": 0.00696122,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 126502,
+    "cacheWrite": 26078,
+    "out": 960
+   },
+   {
+    "usd": 0.00694739,
+    "turns": 4,
+    "fresh": 6,
+    "cacheRead": 126509,
+    "cacheWrite": 26096,
+    "out": 925
+   },
+   {
+    "usd": 0.00617631,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 73401,
+    "cacheWrite": 25727,
+    "out": 593
+   },
+   {
+    "usd": 0.0061565000000000005,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 73410,
+    "cacheWrite": 25215,
+    "out": 758
+   },
+   {
+    "usd": 0.00642781,
+    "turns": 3,
+    "fresh": 4,
+    "cacheRead": 73401,
+    "cacheWrite": 25987,
+    "out": 992
+   }
+  ]
+ }
+}

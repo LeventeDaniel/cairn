@@ -1,0 +1,132 @@
+{
+ "runs": 4,
+ "model": "haiku",
+ "off": {
+  "usd": 0.013462242499999999,
+  "turns": 30.0,
+  "ctxAvg": 9752.733333333334,
+  "cacheRead": 258949.25,
+  "cacheWrite": 33622.25,
+  "out": 8294.5
+ },
+ "old": {
+  "usd": 0.014077535,
+  "turns": 30.25,
+  "ctxAvg": 10026.206611570247,
+  "cacheRead": 267473.5,
+  "cacheWrite": 35808.75,
+  "out": 8480.0
+ },
+ "on": {
+  "usd": 0.013996759999999999,
+  "turns": 25.5,
+  "ctxAvg": 14865.29411764706,
+  "cacheRead": 344856.0,
+  "cacheWrite": 34195.5,
+  "out": 7415.5
+ },
+ "raw": {
+  "off": [
+   {
+    "usd": 0.01511254,
+    "turns": 39,
+    "fresh": 10,
+    "cacheRead": 241744,
+    "cacheWrite": 34573,
+    "out": 11559
+   },
+   {
+    "usd": 0.01771316,
+    "turns": 63,
+    "fresh": 12,
+    "cacheRead": 317986,
+    "cacheWrite": 42138,
+    "out": 12209
+   },
+   {
+    "usd": 0.01063633,
+    "turns": 9,
+    "fresh": 10,
+    "cacheRead": 235563,
+    "cacheWrite": 29096,
+    "out": 4921
+   },
+   {
+    "usd": 0.01038694,
+    "turns": 9,
+    "fresh": 10,
+    "cacheRead": 240504,
+    "cacheWrite": 28682,
+    "out": 4489
+   }
+  ],
+  "old": [
+   {
+    "usd": 0.018884750000000002,
+    "turns": 65,
+    "fresh": 12,
+    "cacheRead": 311545,
+    "cacheWrite": 42738,
+    "out": 14441
+   },
+   {
+    "usd": 0.0170794,
+    "turns": 39,
+    "fresh": 12,
+    "cacheRead": 326640,
+    "cacheWrite": 40954,
+    "out": 11242
+   },
+   {
+    "usd": 0.00975174,
+    "turns": 9,
+    "fresh": 8,
+    "cacheRead": 185034,
+    "cacheWrite": 29913,
+    "out": 3836
+   },
+   {
+    "usd": 0.01059425,
+    "turns": 8,
+    "fresh": 10,
+    "cacheRead": 246675,
+    "cacheWrite": 29630,
+    "out": 4401
+   }
+  ],
+  "on": [
+   {
+    "usd": 0.01539626,
+    "turns": 40,
+    "fresh": 14,
+    "cacheRead": 351276,
+    "cacheWrite": 35263,
+    "out": 9659
+   },
+   {
+    "usd": 0.01791002,
+    "turns": 40,
+    "fresh": 14,
+    "cacheRead": 380812,
+    "cacheWrite": 41400,
+    "out": 11641
+   },
+   {
+    "usd": 0.011697679999999998,
+    "turns": 13,
+    "fresh": 14,
+    "cacheRead": 352018,
+    "cacheWrite": 30063,
+    "out": 4327
+   },
+   {
+    "usd": 0.010983080000000001,
+    "turns": 9,
+    "fresh": 12,
+    "cacheRead": 295318,
+    "cacheWrite": 30056,
+    "out": 4035
+   }
+  ]
+ }
+}

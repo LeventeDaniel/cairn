@@ -13,17 +13,23 @@ TASKS = [
  ('readme', 'Create README.md with a 3-line description of a todo CLI, then count its lines with wc -l.'),
 ]
 PRICE = {'haiku': (1, 5, 0.1, 1.25), 'sonnet': (3, 15, 0.3, 3.75), 'opus': (15, 75, 1.5, 18.75)}
-def estimate(runs, model):
-    p = PRICE.get(model, PRICE['sonnet']); per = (6*82000*p[2] + 85000*p[3] + 1500*p[1]) / 1e6  # ~6 turns at the ~80k floor
-    return per * runs * len(TASKS) * 2
+def estimate(runs, model, ntasks, narms, long=False):
+    """Calibrated on the 2026-11-14 run: ~0.007 USD per short Haiku run (real cost was 26x below the first guess)."""
+    scale = {'haiku': 1, 'sonnet': 3, 'opus': 15}.get(model, 3)
+    return 0.007 * scale * (8 if long else 1) * runs * ntasks * narms
 def find_claude():
     for c in glob.glob(os.path.join(os.path.expanduser('~'), 'AppData/Local/Claude-Data/*/claude-code/*/*/claude.exe')): return c
     return shutil.which('claude') or 'claude'
-def cfg_dir(on):
+LONG = [
+ ('audit', 'Create 12 files mod01.py..mod12.py, each with 3 small functions and docstrings. Then read every file and write REPORT.md listing each function name with its file. Then add a type-hint to every function, file by file. Finally run python -m py_compile on all and report.'),
+ ('refactor', 'Create data.csv with 40 rows (id,name,score). Write stats.py computing mean, median and max of score, tests.py with 5 asserts, run them, then change stats.py to also compute stdev, update tests, run again, and summarise in 3 lines.'),
+]
+def cfg_dir(on, md=None):
     d = tempfile.mkdtemp(prefix='cairn-bench-cfg-')
     if on:
         for f in ('settings.json', 'CLAUDE.md'):
             if os.path.exists(os.path.join(HOME, f)): shutil.copy(os.path.join(HOME, f), d)
+        if md: shutil.copy(md, os.path.join(d, 'CLAUDE.md'))
         shutil.copytree(os.path.join(HOME, 'cairn'), os.path.join(d, 'cairn'), ignore=shutil.ignore_patterns('home', 'shots', 'state'))
     for f in ('.credentials.json',):
         if os.path.exists(os.path.join(HOME, f)): shutil.copy(os.path.join(HOME, f), d)
@@ -44,13 +50,16 @@ def agg(rows):
 def main():
     a = sys.argv; runs = int(a[a.index('--runs') + 1]) if '--runs' in a else 2
     model = a[a.index('--model') + 1] if '--model' in a else 'haiku'
-    est = estimate(runs, model); print(f'{len(TASKS)} tasks x {runs} runs x 2 arms on {model}: estimated ~${est:.2f}')
+    tasks = LONG if '--set' in a and a[a.index('--set')+1] == 'long' else TASKS
+    arms = a[a.index('--arms')+1].split(',') if '--arms' in a else ['off', 'on']
+    old = os.path.expanduser('~/AppData/Local/Temp/CLAUDE.md.pre-lean')
+    est = estimate(runs, model, len(tasks), len(arms), tasks is LONG); print(f'{len(tasks)} tasks x {runs} runs x {len(arms)} arms on {model}: estimated ~${est:.2f}')
     if '--dry-run' in a: return
     if '--yes' not in a and input('run? [y/N] ').lower() != 'y': return
-    claude = find_claude(); res = {'off': [], 'on': []}
-    for arm in ('off', 'on'):
-        cfg = cfg_dir(arm == 'on')
-        for name, prompt in TASKS:
+    claude = find_claude(); res = {x: [] for x in arms}
+    for arm in arms:
+        cfg = cfg_dir(arm != 'off', old if arm == 'old' else None)
+        for name, prompt in tasks:
             for _ in range(runs):
                 w = tempfile.mkdtemp(prefix='cairn-bench-')
                 env = dict(os.environ, CLAUDE_CONFIG_DIR=cfg)
@@ -61,9 +70,11 @@ def main():
                 else: print('failed:', arm, name, (r.stdout or r.stderr)[:200])
                 shutil.rmtree(w, ignore_errors=True)
         shutil.rmtree(cfg, ignore_errors=True)
-    if not res['off'] or not res['on']: print('no usable runs (is the CLI logged in?)'); return
-    out = dict(runs=min(len(res['off']), len(res['on'])), model=model, off=agg(res['off']), on=agg(res['on']))
-    json.dump(dict(out, raw=res), open(os.path.join(HERE, 'results.json'), 'w'), indent=1)
+    if any(not v for v in res.values()): print('no usable runs (is the CLI logged in?)', {k: len(v) for k, v in res.items()}); return
+    tag = ('long' if tasks is LONG else 'short')
+    out = dict(runs=min(len(v) for v in res.values()), model=model, **{k: agg(v) for k, v in res.items()})
+    json.dump(dict(out, raw=res), open(os.path.join(HERE, f'results-{tag}-{len(os.listdir(HERE))}.json'), 'w'), indent=1)
+    if set(arms) != {'off', 'on'}: print(json.dumps(out, indent=1)); return
     mf = os.path.join(HOME, 'cairn/state/measured.json')
     try: m = json.load(open(mf))
     except Exception: m = {}
