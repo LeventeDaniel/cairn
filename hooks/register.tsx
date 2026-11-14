@@ -527,6 +527,13 @@ async function coldCheck($: EngineInterface) {
     percent, at: now, cold: true,
     reason: `away ${away}, the prompt cache expired: the next reply re-reads ${k(last.tokens)} tokens at full price, compacting first makes it and later replies cheaper`,
   }))
+  // Nobody is at the screen to click the band: compact now, before the first reply re-reads it all.
+  // If it can't run, the offer stays up as the fallback.
+  if (cfg.compact_mode === 'smart' || cfg.compact_mode === 'auto') {
+    $.ui.toast(`Cairn is compacting: away ${away}, the prompt cache expired`)
+    tries = 0
+    queueCompact($)
+  }
 }
 
 async function snooze($: EngineInterface) {

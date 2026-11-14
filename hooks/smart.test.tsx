@@ -12,7 +12,7 @@ const BAND = {
 type Seen = { compacts: number; toasts: string[]; release: () => void; releaseCache: () => void; stored: Record<string, unknown> }
 
 /** An engine at `percent` context; long timers (the idle one) wait for `seen.release()`. */
-function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; cwd?: string } = {}): Seen {
+function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; cwd?: string; failCompact?: boolean } = {}): Seen {
   const seen: Seen = { compacts: 0, toasts: [], release: () => {}, releaseCache: () => {}, stored: {} }
   const gate = new Promise<void>(r => { seen.release = r })
   const cacheGate = new Promise<void>(r => { seen.releaseCache = r })
@@ -46,7 +46,10 @@ function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; c
   on('turn.complete', (_: any, e: any) => ({ text: e.answer }))
   on('session.measure', (_: any, e: any) => ({ changed: e.changed }))
   on('command.run', (_: any, e: any) => {
-    if (e.command === 'compact') seen.compacts++
+    if (e.command === 'compact') {
+      if (opt.failCompact) throw new Error('refused')
+      seen.compacts++
+    }
     return { text: 'ok' }
   })
   return seen
@@ -206,19 +209,35 @@ test('each turn end is noted, so a later start can tell the cache went cold', as
   expect((seen.stored.lastEnd as any).s1).toEqual({ at: 1000, tokens: 200000 })
 })
 
-test('a big session resumed after the cache expired is offered a compaction first', async ($, on) => {
+test('a big session resumed after the cache expired compacts by itself, no click', async ($, on) => {
   const seen = engine(on, 20, { now: 3 * 3600000, ends: { s1: { at: 0, tokens: 200000 } } })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await settle()
+  expect(seen.compacts).toBe(1)
+  expect(seen.toasts.some(t => t.includes('away 3 h'))).toBe(true)
+})
+
+test('if the idle compaction cannot run, the banner stays as the fallback', async ($, on) => {
+  const seen = engine(on, 20, { now: 3 * 3600000, ends: { s1: { at: 0, tokens: 200000 } }, failCompact: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (let i = 0; i < 20; i++) await settle()   // all retries used up
+  expect(seen.compacts).toBe(0)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect((await ui.find({ type: 'Text', text: /compact before you continue/ }))?.text).toContain('away 3 h')
+  await ui.unmount()
+})
+
+test('the fallback banner names the idle time and the tokens at stake', async ($, on) => {
+  const seen = engine(on, 20, { now: 3 * 3600000, ends: { s1: { at: 0, tokens: 200000 } }, failCompact: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (let i = 0; i < 20; i++) await settle()   // all retries used up
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
   const t = (await ui.find({ type: 'Text', text: /compact before you continue/ }))?.text
   expect(t).toContain('away 3 h')
   expect(t).toContain('200k tokens')
   expect(t?.includes('runs by itself')).toBe(false)
-  await ui.press({ key: 'now' })
-  await settle()
-  expect(seen.compacts).toBe(1)
   await ui.unmount()
+  expect(seen.compacts).toBe(0)
 })
 
 test('a session resumed while the cache is still warm gets no offer', async ($, on) => {
