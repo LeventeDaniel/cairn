@@ -90,6 +90,27 @@ class Board(unittest.TestCase):
         self.assertEqual(rows["t1"]["cliSession"], "u1")
         self.assertEqual(rows["t2"]["status"], "closed")
 
+    def test_explicit_close_is_not_reopened_by_refresh(self):
+        run(self.m, "dispatch", "--repo", "example-a", "--title", "example-a: done thing", "--session", "local_c1")
+        run(self.m, "report", "t1", "--status", "closed")
+        self.m._AGENTS = [{"sessionId": "c1", "name": "example-a: done thing", "status": "idle",
+                           "startedAt": time.time() * 1000}]
+        self.assertEqual(json.loads(run(self.m, "board", "--json"))[0]["status"], "closed")
+
+    def test_note_from_before_idle_is_marked_stale(self):
+        run(self.m, "dispatch", "--repo", "example-a", "--title", "example-a: long", "--session", "local_s1")
+        run(self.m, "report", "t1", "--note", "still running")
+        b = json.loads(self.m.BOARD.read_text())
+        b["tasks"][0]["updated"] -= 60
+        self.m.BOARD.write_text(json.dumps(b))
+        self.m._AGENTS = [{"sessionId": "s1", "name": "example-a: long", "status": "idle",
+                           "startedAt": time.time() * 1000}]
+        row = json.loads(run(self.m, "board", "--json"))[0]
+        self.assertEqual(row["status"], "waiting")
+        self.assertTrue(row["reportStale"])
+        run(self.m, "report", "t1", "--note", "finished, PR open")
+        self.assertFalse(json.loads(run(self.m, "board", "--json"))[0]["reportStale"])
+
     def test_no_cli_answer_keeps_statuses(self):
         run(self.m, "dispatch", "--repo", "example-a", "--title", "example-a: x")
         self.m._AGENTS = []

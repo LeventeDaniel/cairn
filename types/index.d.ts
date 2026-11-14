@@ -83,7 +83,7 @@ export type BoardTask = {
   id: string; repo: string; title: string; kind: string; model: string; effort: string
   session: string; cliSession?: string
   status: 'running' | 'waiting' | 'done' | 'queued' | 'closed'
-  started: number; updated: number; report: string
+  started: number; updated: number; report: string; reportStale?: boolean
 }
 
 declare module 'claude-code' {

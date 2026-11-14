@@ -39,7 +39,7 @@ export function needsAndRunning(w: Workspace | null, inbox: readonly string[]): 
   for (const t of w.board ?? []) {
     const key = t.cliSession || t.session
     if (t.status === 'waiting') {
-      needs.push({ text: title(t.title), hint: t.report ? clip(t.report, 70) : 'Open it and answer', href: sessionHref(t.session) })
+      needs.push({ text: title(t.title), hint: t.report && !t.reportStale ? clip(t.report, 70) : 'Finished its turn: open it and check', href: sessionHref(t.session) })
       seen.add(key); seen.add(t.title)
     } else if (t.status === 'running') {
       running.push({ text: title(t.title), href: sessionHref(t.session) })

@@ -149,7 +149,7 @@ async function refreshWorkspace($: EngineInterface, force = false) {
     for (const t of speak ? w.board ?? [] : []) {
       const was = boardSeen.get(t.id)
       if (boardSeen.size > 0 && was !== undefined && was !== t.status && (t.status === 'done' || t.status === 'waiting')) {
-        $.ui.toast((t.status === 'done' ? 'Finished: ' : 'Needs you: ') + t.title.slice(0, 50) + (t.report ? ' - ' + t.report.slice(0, 60) : ''))
+        $.ui.toast((t.status === 'done' ? 'Finished: ' : 'Needs you: ') + t.title.slice(0, 50) + (t.report && !t.reportStale ? ' - ' + t.report.slice(0, 60) : ''))
       }
     }
     boardSeen = new Map((w.board ?? []).map(t => [t.id, t.status]))

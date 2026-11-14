@@ -845,8 +845,8 @@ def board_refresh(b, agents=None):
     if not agents:
         return b  # no CLI or no answer: keep what we have rather than mark everything closed
     for t in b["tasks"]:
-        if t["status"] in ("done", "queued"):
-            continue
+        if t["status"] in ("done", "queued") or (t["status"] == "closed" and t.get("closedBy") == "report"):
+            continue  # an explicit close is final; only an auto-close (session gone) may come back
         sid = (t.get("session") or "").replace("local_", "")
         a = next((x for x in agents if sid and x.get("sessionId") == sid), None)
         if a is None:
@@ -859,7 +859,12 @@ def board_refresh(b, agents=None):
             continue
         t["cliSession"] = a.get("sessionId")
         st = a.get("status")
-        t["status"] = "running" if st == "busy" else "waiting" if st in ("idle", "waiting") else t["status"]
+        new = "running" if st == "busy" else "waiting" if st in ("idle", "waiting") else t["status"]
+        if new == "waiting" and t["status"] == "running":
+            t["idleSince"] = time.time()
+        t["status"] = new
+        # the worker's last note predates it going idle (e.g. "still running"): don't show it as current
+        t["reportStale"] = bool(new == "waiting" and t.get("report") and t.get("idleSince", 0) > t.get("updated", 0))
     return b
 
 
@@ -919,6 +924,10 @@ def cmd_report():
         t["session"] = a.session
     if a.status:
         t["status"] = a.status
+        if a.status == "closed":
+            t["closedBy"] = "report"
+        else:
+            t.pop("closedBy", None)
     if a.note:
         t["report"] = a.note.replace("\n", " ")[:200]
     t["updated"] = time.time()
