@@ -58,3 +58,11 @@ new task send it to Home. At most `max_running` (3) workers run; the rest wait a
 
 ## Screenshots
 To see the user's screen, run `cairn.py shot` then Read the PNG; never ask the user for screenshots. The PNG is saved to `~/.claude/cairn/shots/latest.png` (local only, overwritten each time).
+
+## Fewer approval prompts (opt-in)
+`python3 install.py --routine-allow` also allows tests and local git bookkeeping without a prompt (unittest, pytest,
+git status/diff/log/show/add/commit). It never allows push, install, delete or network commands. Re-run `install.py`
+without the flag, or `--uninstall`, to remove exactly the rules it added; your own rules stay.
+Cairn Home asks you once, up front, which risky steps a task may take and passes that to the worker as `Authorized:`.
+What no setting can change: the app only takes an approval typed in the worker's own session, and its safety
+classifier can still block risky actions.

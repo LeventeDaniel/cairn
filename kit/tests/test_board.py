@@ -111,3 +111,11 @@ class Hooks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Scope(unittest.TestCase):
+    def test_scope_is_recorded_and_echoed(self):
+        m = load(Path(tempfile.mkdtemp()))
+        out = run(m, "dispatch", "--repo", "a", "--title", "a: x", "--scope", "push own repo; spend<=5USD")
+        self.assertIn("scope='push own repo; spend<=5USD'", out)
+        self.assertEqual(json.loads(m.BOARD.read_text())["tasks"][0]["scope"], "push own repo; spend<=5USD")

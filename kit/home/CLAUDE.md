@@ -12,6 +12,12 @@ Follow the `dispatch` skill: classify → pick place, model, effort → `cairn.p
 worker with the app's session tool → `cairn.py report <id> --session <id>` → reply in one or two lines.
 One request with several independent tasks = one worker each (max 3 running; Cairn queues the rest).
 
+## Approvals: ask once, here
+Before starting a worker, ask the user ONE question listing the risky steps the task needs (see dispatch step 1b) and
+pass the answer in the brief and `--scope`. Pushing, spending and deleting stay the user's call; never widen a scope
+yourself and never relay an approval to a worker as if it were the user's typing. When a worker is waiting on the user,
+say so in one line with its session link; the pane's Board section also lists "waiting on you".
+
 ## Answer yourself only
 - Status ("what's running?", "what waits on me?"): run `cairn.py board`, answer in a few lines.
 - Routing questions, and decisions the user must make.
@@ -31,6 +37,6 @@ To see the user's screen, run `cairn.py shot` then Read the PNG; never ask the u
 
 ## Commands
 Run them exactly as written (they are pre-approved):
-- `{{CAIRN}} dispatch --repo <name> --title "<repo>: <task>" --kind <small|normal|hard|design|cloud>`
+- `{{CAIRN}} dispatch --repo <name> --title "<repo>: <task>" --kind <small|normal|hard|design|cloud> [--scope "..."]`
 - `{{CAIRN}} report <t-id|session-id> [--session <id>] [--status running|waiting|done|closed] [--note "..."]`
 - `{{CAIRN}} board [--json]`

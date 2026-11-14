@@ -822,6 +822,7 @@ def cmd_dispatch():
     ap.add_argument("--model", default="")
     ap.add_argument("--effort", default="")
     ap.add_argument("--session", default="")
+    ap.add_argument("--scope", default="", help="risky steps the user pre-approved in Home, e.g. 'install; spend<=5USD'")
     a = ap.parse_args(sys.argv[2:])
     c = cfg()
     b = board_refresh(board_load())
@@ -829,6 +830,8 @@ def cmd_dispatch():
     t = {"id": f"t{b['next']}", "repo": a.repo, "title": a.title[:80], "kind": a.kind,
          "model": a.model or model, "effort": a.effort or effort, "session": a.session,
          "status": "running", "started": time.time(), "updated": time.time(), "report": ""}
+    if a.scope:
+        t["scope"] = a.scope[:200]
     running = [x for x in b["tasks"] if x["status"] == "running"]
     if len(running) >= c["max_running"] and a.kind != "cloud":
         t["status"] = "queued"
@@ -840,7 +843,7 @@ def cmd_dispatch():
               f"tell the user in one line it's queued behind: " + "; ".join(x['title'] for x in running) +
               f". Start it when one finishes, then `cairn.py report {t['id']} --status running --session <id>`.")
     else:
-        print(f"OK {t['id']} model={t['model']} effort={t['effort']}. Start the worker now, titled '{t['title']}', "
+        print(f"OK {t['id']} model={t['model']} effort={t['effort']}" + (f" scope={t['scope']!r}" if a.scope else "") + f". Start the worker now, titled '{t['title']}', "
               f"then record it: `cairn.py report {t['id']} --session <the session_id start_session returned>`.")
 
 

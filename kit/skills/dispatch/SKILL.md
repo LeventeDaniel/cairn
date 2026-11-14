@@ -23,8 +23,17 @@ description: Cairn Home's routine for every request - classify it, pick where it
 Unsure between two rows: the cheaper one. A follow-up on a task that already has a worker: tell the user to type it
 there (link the session), don't start another.
 
+## 1b. Ask once, up front (approvals live in Home)
+Workers can't take an approval relayed by Home, and the app may still prompt for installs, pushes or trusting a repo. So
+before starting, decide which risky steps the task will plausibly need and ask the user ONE `AskUserQuestion`
+(multiSelect, in Home, now): `install packages` / `push to the user's own remote` / `spend up to N USD` / `delete files` /
+`trust a new folder`. Only list what the task really needs; skip the question when it needs none. Never offer force-push,
+deleting data you can't restore, or anything outside the user's own repos. Put the answer in the brief (`Authorized:`)
+and in `--scope`. The user's choice in this chat is a real instruction to the worker; the worker may act inside it
+without asking again. Anything outside it, or any app dialog that still appears, the worker handles by batching (below).
+
 ## 2. Board first
-`cairn.py dispatch --repo <name from REPOS.md> --title "<repo>: <task in 2-5 words>" --kind <kind>`
+`cairn.py dispatch --repo <name from REPOS.md> --title "<repo>: <task in 2-5 words>" --kind <kind> [--scope "<answers>"]`
 - `OK t7 model=… effort=…` → go on.
 - `QUEUED t7 …` → don't start it; tell the user in one line. Start it when a running one is done.
 
@@ -33,7 +42,10 @@ there (link the session), don't start another.
 Goal: <one sentence, what the user wants and why>
 Repo: <path from REPOS.md>   Files/area: <paths or "find them">
 Done when: <checkable: tests pass / committed / the user sees X>
+Authorized by the user in Cairn Home chat on <date>: <the ticked steps, with limits> | none.
 Constraints: <the user's rules that matter: no private names in public repos, don't push unless asked, ...>
+Approvals: do all safe work first. Collect every step that still needs the user (outside Authorized, or an app
+dialog you can't clear) and ask ONCE at the end of your turn, as a single list. Never push, spend or delete beyond Authorized.
 Report: when done or blocked, end your turn with a one-line summary (it reaches Cairn Home automatically).
 If a new, unrelated task comes up, send it to "Cairn Home" with SendMessage instead of doing it.
 ```
