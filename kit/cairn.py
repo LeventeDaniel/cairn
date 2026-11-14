@@ -1233,7 +1233,7 @@ def cmd_board():
             print(f"         STOPPED {ago} min ago by an API error ({t['stopped']}): it did not finish. "
                   + ("Once the usage limit has reset, tell it to continue." if t["stopped"] == "rate_limit"
                      else "Open it, or tell it to continue.") + (f" ({t['last'][:100]})" if t.get("last") else ""))
-        elif t.get("last") and t["status"] in ("running", "waiting"):
+        elif t.get("last") and (t["status"] == "waiting" or t.get("pending")):  # while it runs again, the old line is history
             ago = round((time.time() - t.get("turnEnded", time.time())) / 60)
             print(f"         its last turn ended {ago} min ago: {t['last'][:160]}"
                   + (f" ({t['pending']} background task(s) or wakeup(s) pending)" if t.get("pending") else ""))

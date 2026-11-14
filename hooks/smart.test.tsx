@@ -209,15 +209,24 @@ test('each turn end is noted, so a later start can tell the cache went cold', as
   expect((seen.stored.lastEnd as any).s1).toEqual({ at: 1000, tokens: 200000 })
 })
 
-test('a big session resumed after the cache expired compacts by itself, no click', async ($, on) => {
+test('a big session started after the cache expired is offered a compaction, never given one', async ($, on) => {
+  // An app restart starts every open session at once; compacting them all on a cold cache is a full-price
+  // read each (this took a quarter of a 5-hour limit in seconds). The band waits for the person instead.
   const seen = engine(on, 20, { now: 3 * 3600000, ends: { s1: { at: 0, tokens: 200000 } } })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (let i = 0; i < 5; i++) await settle()
+  seen.release(); seen.releaseCache()
+  for (let i = 0; i < 5; i++) await settle()
+  expect(seen.compacts).toBe(0)
+  expect(seen.toasts.some(t => t.includes('compacting'))).toBe(false)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect((await ui.find({ type: 'Text', text: /compact before you continue/ }))?.text).toContain('away 3 h')
+  await ui.press({ key: 'now' })   // the person is back and says yes
   await settle()
   expect(seen.compacts).toBe(1)
-  expect(seen.toasts.some(t => t.includes('away 3 h'))).toBe(true)
 })
 
-test('if the idle compaction cannot run, the banner stays as the fallback', async ($, on) => {
+test('after a cold start the banner stays up until someone answers it', async ($, on) => {
   const seen = engine(on, 20, { now: 3 * 3600000, ends: { s1: { at: 0, tokens: 200000 } }, failCompact: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   for (let i = 0; i < 20; i++) await settle()   // all retries used up

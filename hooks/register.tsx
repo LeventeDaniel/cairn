@@ -585,7 +585,7 @@ async function noteEnd($: EngineInterface) {
 
 /**
  * At session start: a session coming back after its prompt cache expired, with
- * a big context, gets an offer to compact before the first reply re-reads it all.
+ * a big context, gets an offer (the band) to compact before the first reply re-reads it all.
  */
 async function coldCheck($: EngineInterface) {
   if (cfg.compact_mode === 'off') return
@@ -602,16 +602,12 @@ async function coldCheck($: EngineInterface) {
     percent, at: now, cold: true,
     reason: `away ${away}, the prompt cache expired: ${k(last.tokens)} tokens are re-read at full price once either way, compacting first makes the replies after that cheaper`,
   }))
-  // Nobody is at the screen to click the band: compact now, so the replies after this one are cheap.
-  // If it can't run, the offer stays up as the fallback.
-  // Not a "cold re-read avoided" in the ledger: with the cache already expired the summarizing request
-  // itself reads the whole history uncached (code.claude.com/docs/en/prompt-caching, "Compacting the
-  // conversation"). Only the guard, which compacts while the cache is still warm, avoids that read.
-  if ((cfg.compact_mode === 'smart' || cfg.compact_mode === 'auto') && !(await finishedWorker($))) {
-    $.ui.toast(`Cairn is compacting: away ${away}, the prompt cache expired`)
-    tries = 0
-    queueCompact($)
-  }
+  // Offer only, never by itself. With the cache already expired the summarizing request reads the whole
+  // history uncached (code.claude.com/docs/en/prompt-caching, "Compacting the conversation"), so this
+  // compaction is the most expensive kind, and a session start is not the person coming back: after an
+  // app restart every open session starts at once. Seen live 2026-11-14: the restart compacted the big
+  // sessions together (one of 407k tokens) and took a quarter of the 5-hour limit in seconds. The band
+  // waits for whoever actually returns to this session.
 }
 
 async function snooze($: EngineInterface) {
