@@ -2,6 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage, SessionUsage } from 'claude-code'
 
 import type { Compaction, Offer, Snap, Work, Workspace } from '../types'
+import { LEDGER_DEFAULTS, FILE as LEDGER_FILE, addEvent, parseLedger, summaryLines } from './ledger'
+import type { LedgerEvent } from './ledger'
 
 const VERSION = '0.7.0'
 const PANE = 'cairn'
@@ -27,6 +29,7 @@ const DEFAULTS = {
   home_compact_soft: 15,
   home_compact_at: 25,
   home_compact_hard: 50,
+  ...LEDGER_DEFAULTS,
 }
 type Cfg = typeof DEFAULTS
 
@@ -42,6 +45,8 @@ const offer = atom({ plugin: 'cairn', key: 'offer' } as const,
 /** Per day: cost by session (so several sessions add up) and the highest plan-usage readings. */
 export type Days = Record<string, { usd: Record<string, number>; fh?: number; sd?: number }>
 const days = atom({ plugin: 'cairn', key: 'days' } as const, {} as Days, { shape: 'days-1' })
+/** Savings ledger events (~/.claude/cairn/state/ledger.json); see ledger.ts. */
+const ledger = atom({ plugin: 'cairn', key: 'ledger' } as const, [] as LedgerEvent[], { shape: 'ledger-1' })
 const ws = atom({ plugin: 'cairn', key: 'ws' } as const,
   null as Workspace | null, { shape: 'ws-1' })
 
@@ -68,6 +73,8 @@ let compacting = false
 let turnDone = ''      // what finished, '' if nothing
 let turnSeq = 0        // main-loop turns started; an idle timer checks nothing new began
 let snoozedTo = 0      // "Not now": no new offer below this %
+let cairnRun = false   // a compaction Cairn queued is running (the app's own are not)
+let coldRun = false    // ...and it was for a cold or soon-cold prompt cache
 let compactions = 0    // main-loop compactions done; a cache timer checks none ran since
 
 /** True when this session runs in Cairn Home's folder (~/.claude/cairn/home). */
@@ -342,6 +349,24 @@ async function logUsage($: EngineInterface, home: string, usd: number | undefine
   await update($, days, () => next)
 }
 
+// ------------------------------------------------------------ savings ledger
+async function logEvent($: EngineInterface, ev: LedgerEvent) {
+  try {
+    const file = `${claudeDir($.plugin.root)}/${LEDGER_FILE}`
+    let prev: LedgerEvent[] = []
+    try { prev = parseLedger(await $.fs.read(file)) } catch { /* first event */ }
+    const next = addEvent(prev, ev)
+    await $.fs.write(file, JSON.stringify(next))
+    await update($, ledger, () => next)
+  } catch (err) {
+    $.ui.log(`cairn: could not write the ledger: ${String(err)}`)
+  }
+}
+
+async function warned($: EngineInterface, source: 'cold' | 'guard', tokens: number) {
+  await logEvent($, { kind: 'cache-warning', t: await $.clock.now(), sid: safeId(await $.session.id()), source, tokens })
+}
+
 // ------------------------------------------------------------ measuring
 async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'rateLimits' | 'cost'>) {
   const home = claudeDir($.plugin.root)
@@ -487,6 +512,8 @@ async function cacheGuard($: EngineInterface, seq: number, done: number) {
   if (percent < snoozedTo) return // "Not now" stands
   if (tokens < cfg.cache_min_tokens) return
   await update($, offer, () => null)
+  await warned($, 'guard', tokens)
+  coldRun = true
   $.ui.toast(`Cairn compacted before the prompt cache expired: ${k(tokens)} tokens would have been re-read at full price`)
   queueCompact($)
 }
@@ -523,6 +550,7 @@ async function coldCheck($: EngineInterface) {
   if (idle < cfg.cache_ttl_minutes) return
   const away = idle >= 120 ? `${Math.round(idle / 60)} h` : `${Math.round(idle)} min`
   const percent = (await read($, snap)).percent ?? 0
+  await warned($, 'cold', last.tokens)
   await update($, offer, () => ({
     percent, at: now, cold: true,
     reason: `away ${away}, the prompt cache expired: the next reply re-reads ${k(last.tokens)} tokens at full price, compacting first makes it and later replies cheaper`,
@@ -532,6 +560,7 @@ async function coldCheck($: EngineInterface) {
   if (cfg.compact_mode === 'smart' || cfg.compact_mode === 'auto') {
     $.ui.toast(`Cairn is compacting: away ${away}, the prompt cache expired`)
     tries = 0
+    coldRun = true
     queueCompact($)
   }
 }
@@ -565,6 +594,7 @@ function queueCompact($: EngineInterface) {
 async function runCompact($: EngineInterface) {
   if (!pending || compacting) return
   compacting = true
+  cairnRun = true
   try {
     // Through the built-in /compact, not $.session.compact(): a mod's own call skips
     // the mod's own session.compact hook, which is where Cairn's notes go in.
@@ -585,6 +615,8 @@ async function runCompact($: EngineInterface) {
     // otherwise still pending: the turn.complete hook (or the next timer) retries
   } finally {
     compacting = false
+    cairnRun = false
+    coldRun = false
   }
   if (pending) queueCompact($)
 }
@@ -605,6 +637,10 @@ export const register: Register = on => {
     } catch (err) {
       $.ui.log(`cairn: cold-start check failed: ${String(err)}`)
     }
+    try {
+      const evs = parseLedger(await $.fs.read(`${claudeDir($.plugin.root)}/${LEDGER_FILE}`))
+      await update($, ledger, () => evs)
+    } catch { /* no ledger yet */ }
     void refreshWorkspace($, true)
     return ran
   })
@@ -687,6 +723,12 @@ export const register: Register = on => {
       trimmedCount: fellBack ? 0 : trimmed.count, trimmedChars: fellBack ? 0 : trimmed.chars,
       check, fellBack,
     }].slice(-10))
+    if (!isSubagent) {
+      await logEvent($, {
+        kind: 'compaction', t: at, sid: safeId(await $.session.id()), by: cairnRun ? 'cairn' : 'app',
+        before: res.tokensBefore, after: res.tokensAfter, ...(cairnRun && coldRun ? { cold: true } : {}),
+      })
+    }
     if (!isSubagent) { snoozedTo = 0; compactions++; await update($, offer, () => null) }
     return messages === res.messages ? res : { ...res, messages }
   }).catch(($, e, next) => next(e)) // on any failure, the engine's own compaction stands
@@ -729,6 +771,8 @@ export const register: Register = on => {
     const o = await read($, offer)
     const w2 = await read($, ws)
     const dd = await read($, days)
+    const led = await read($, ledger)
+    const now = await $.clock.now()
     const p = s.percent
     const color = s.level === 2 ? 'red' : s.level === 1 ? 'yellow' : 'green'
     const width = 20
@@ -761,6 +805,11 @@ export const register: Register = on => {
           <Text dimColor>
             {dayLine(k, dd[k]!)}
           </Text>
+        ))}
+        <Text> </Text>
+        <Text bold>Savings</Text>
+        {summaryLines(led, dd, now, cfg).map((l, i) => (
+          <Text dimColor={i > 0 && l.startsWith('Estimate')}>{l}</Text>
         ))}
         <Text> </Text>
         <Text bold>Work tracked</Text>

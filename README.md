@@ -77,3 +77,7 @@ The pane and compaction help work on their own. The `SESSION.md` notes, inbox an
 ## License
 
 MIT
+
+## Savings ledger
+
+Cairn logs each main-session compaction (tokens before and after, and whether Cairn or the app triggered it) and each cache-expired warning (and whether you compacted after it) to `~/.claude/cairn/state/ledger.json` (last 500 events). The pane's **Savings** section sums the last 7 days. Savings are an **estimate**, not a measurement: only compactions Cairn triggered count, each assumed to spare `ledger_turns` (10) later replies from re-reading the removed tokens at `ledger_read_usd_per_mtok` ($0.30/Mtok), plus the one full-price re-read (`ledger_write_usd_per_mtok`, $3.75/Mtok) avoided when the cache was cold. All three are tunable in `config.json`. The cost-per-session comparison before vs after the first ledger event needs 3+ sessions on each side in `usage-days.json`; otherwise the pane says there is not enough data.
