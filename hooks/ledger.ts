@@ -3,9 +3,9 @@
  * ~/.claude/cairn/state/ledger.json. Everything derived from it is an ESTIMATE:
  * the file records measured token counts, the savings are modelled from them.
  */
-export type LedgerEvent =
-  | { kind: 'compaction'; t: number; sid: string; by: 'cairn' | 'app'; before?: number; after?: number; cold?: boolean }
-  | { kind: 'cache-warning'; t: number; sid: string; source: 'cold' | 'guard'; tokens: number }
+import type { LedgerEvent } from '../types'
+// The type lives in types/index.d.ts: the plugin's state contract has to be self-contained (`claude plugin validate`).
+export type { LedgerEvent }
 
 export type LedgerCfg = {
   /** replies assumed to follow a compaction, each re-reading the saved tokens */

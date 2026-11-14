@@ -83,8 +83,17 @@ export type BoardTask = {
   id: string; repo: string; title: string; kind: string; model: string; effort: string
   session: string; cliSession?: string
   status: 'running' | 'waiting' | 'done' | 'queued' | 'closed'
-  started: number; updated: number; report: string; reportStale?: boolean
+  started: number; updated: number; report: string
+  /** the note is older than the worker's last turn end */
+  reportStale?: boolean
+  /** from the worker's own Stop hook: the last line it said, when (epoch s), and background tasks/wakeups it left pending */
+  last?: string; turnEnded?: number; pending?: number
 }
+
+/** One line of the savings ledger (~/.claude/cairn/state/ledger.json). */
+export type LedgerEvent =
+  | { kind: 'compaction'; t: number; sid: string; by: 'cairn' | 'app'; before?: number; after?: number; cold?: boolean }
+  | { kind: 'cache-warning'; t: number; sid: string; source: 'cold' | 'guard'; tokens: number }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -95,7 +104,9 @@ declare module 'claude-code' {
       offer: Shaped<Offer | null>
       ws: Shaped<Workspace | null>
       details: Shaped<boolean>
-      ledger: Shaped<import('../hooks/ledger').LedgerEvent[]>
+      ledger: Shaped<LedgerEvent[]>
+      days: Shaped<Record<string, { usd: Record<string, number>; fh?: number; sd?: number }>>
+      measured: Shaped<string[]>
     }
   }
 }
