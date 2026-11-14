@@ -39,6 +39,9 @@ const comps = atom({ plugin: 'cairn', key: 'comps' } as const,
   [] as Compaction[], { shape: 'comps-1' })
 const offer = atom({ plugin: 'cairn', key: 'offer' } as const,
   null as Offer | null, { shape: 'offer-1' })
+/** Per day: cost by session (so several sessions add up) and the highest plan-usage readings. */
+export type Days = Record<string, { usd: Record<string, number>; fh?: number; sd?: number }>
+const days = atom({ plugin: 'cairn', key: 'days' } as const, {} as Days, { shape: 'days-1' })
 const ws = atom({ plugin: 'cairn', key: 'ws' } as const,
   null as Workspace | null, { shape: 'ws-1' })
 
@@ -284,6 +287,45 @@ function checkSummary(messages: readonly SessionMessage[], w: Work, block: strin
   return { messages: patched, check: 'patched' as const }
 }
 
+// ------------------------------------------------------------ usage per day
+/** Adds one reading to the per-day log; keeps the last 14 days. Pure, so it can be tested. */
+export function addUsage(prev: Days, day: string, sid: string, usd: number | undefined, fh?: number, sd?: number): Days {
+  const d = prev[day] ?? { usd: {} }
+  const next = {
+    usd: usd === undefined ? d.usd : { ...d.usd, [sid]: Math.max(d.usd[sid] ?? 0, usd) },
+    fh: fh === undefined ? d.fh : Math.max(d.fh ?? 0, fh),
+    sd: sd === undefined ? d.sd : Math.max(d.sd ?? 0, sd),
+  }
+  const all = { ...prev, [day]: next }
+  return Object.fromEntries(Object.keys(all).sort().slice(-14).map(k => [k, all[k]!]))
+}
+
+function dayLine(day: string, d: Days[string]): string {
+  const usd = Object.values(d.usd).reduce((a, b) => a + b, 0).toFixed(2)
+  return day.slice(5) + ' $' + usd + ' (' + Object.keys(d.usd).length + ' sessions) · peak 5h ' +
+    (d.fh?.toFixed(0) ?? '–') + '% · 7d ' + (d.sd?.toFixed(0) ?? '–') + '%'
+}
+
+let daysAt = -Infinity
+async function logUsage($: EngineInterface, home: string, usd: number | undefined, fh?: number, sd?: number) {
+  const now = await $.clock.now()
+  if (now - daysAt < 60000) return
+  daysAt = now
+  const file = `${home}/cairn/state/usage-days.json`
+  let prev: Days = {}
+  try {
+    const raw = JSON.parse(await $.fs.read(file)) as Record<string, unknown>
+    for (const [k, v] of Object.entries(raw)) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(k) && v && typeof v === 'object' && typeof (v as Days[string]).usd === 'object') prev[k] = v as Days[string]
+    }
+  } catch { /* first reading */ }
+  const day = new Date(now).toISOString().slice(0, 10)
+  const sid = safeId(await $.session.id())
+  const next = addUsage(prev, day, sid, usd, fh, sd)
+  await $.fs.write(file, JSON.stringify(next))
+  await update($, days, () => next)
+}
+
 // ------------------------------------------------------------ measuring
 async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'rateLimits' | 'cost'>) {
   const home = claudeDir($.plugin.root)
@@ -316,6 +358,12 @@ async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'ra
       : `Context ${p!.toFixed(0)}% full: plan a handoff at the next stopping point`)
   }
   lastLevel = level
+
+  try {
+    await logUsage($, home, s.usd, fh, sd)
+  } catch (err) {
+    $.ui.log(`cairn: could not log usage: ${String(err)}`)
+  }
 
   const state = {
     t: Date.now() / 1000, pct: p ?? null, window: s.window || null,
@@ -657,6 +705,7 @@ export const register: Register = on => {
     const cs = await read($, comps)
     const o = await read($, offer)
     const w2 = await read($, ws)
+    const dd = await read($, days)
     const p = s.percent
     const color = s.level === 2 ? 'red' : s.level === 1 ? 'yellow' : 'green'
     const width = 20
@@ -685,6 +734,11 @@ export const register: Register = on => {
           ? <Text dimColor>No rate-limit reading.</Text>
           : <Text color={usageHigh ? 'yellow' : undefined}>5h {fh?.toFixed(0) ?? '–'}% · 7d {sd?.toFixed(0) ?? '–'}%</Text>}
         {s.usd !== undefined && <Text dimColor>Session cost ${s.usd.toFixed(2)}</Text>}
+        {Object.keys(dd).slice(-4).reverse().map(k => (
+          <Text dimColor>
+            {dayLine(k, dd[k]!)}
+          </Text>
+        ))}
         <Text> </Text>
         <Text bold>Work tracked</Text>
         <Text dimColor>{w.files.length} files edited · {w.oks.length} recent commands ok</Text>
