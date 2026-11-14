@@ -25,6 +25,12 @@ Companion mod for Cairn. It shows a live **Cairn** pane (context fill, plan usag
 - **Cairn Home** (a session in `~/.claude/cairn/home`) holds only the board, so it compacts much earlier: see the `home_compact_*` settings.
 - **Feeds cairn.py** exact numbers in `~/.claude/cairn/state/<session>.json`, because the Code tab runs no status line.
 
+- **Usage per day** in the pane: cost summed over all sessions and the peak 5h / 7d plan usage for the last days, kept in `~/.claude/cairn/state/usage-days.json` (14 days).
+- **Handoff warning**: the pane says when `SESSION.md` is 6 or more edits behind your work.
+- **Board** (Cairn Home): running, waiting and recent tasks. A toast appears in Cairn Home when a task finishes or starts waiting on you, and a running task with no news for 90 minutes is marked "quiet, check it".
+- **Stale** line: worktrees and closed sessions nobody touched for 14 days (`cairn.py cleanup` lists them; nothing is removed automatically).
+- The workspace view refreshes every 2 minutes while something changes, so an idle session does not show an old board.
+
 ## Commands
 
 - `/cairn` opens the pane.
