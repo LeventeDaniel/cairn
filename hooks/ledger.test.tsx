@@ -148,7 +148,8 @@ test('a compaction after the cache already expired is not booked as a cold re-re
   })
   on('session.compact', () => ({ messages: [{ role: 'user', text: 's', toolUses: [] }], tokensBefore: 200000, tokensAfter: 20000 }))
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await started // the cold-start compaction Cairn queued is running
+  await $.command.run({ command: 'cairn', args: 'compact' } as any)   // the person accepts the cold-start offer
+  await started // that compaction is running
   await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'hi', toolUses: [] }] } as any)
   release()
   for (let i = 0; i < 800; i++) await Promise.resolve()
