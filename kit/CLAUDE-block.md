@@ -1,11 +1,11 @@
 <!-- cairn:start -->
 ## Cairn — session manager (keep this block; reinstall replaces it)
-**Act, don't ask.** Never ask me to type a slash command except `/clear`. Use the kit's skills (handoff, pass, repos, where-to-run, context-audit, skill-scout, cairn-update) yourself whenever they fit. After acting, tell me in ONE line what you did and where it is.
+**Act, don't ask.** Never ask me to type a slash command except `/clear`. Use the kit's skills (handoff, pass, repos, where-to-run, context-audit, skill-scout, cairn-update) yourself whenever they fit. When you route, spawn, hand off or save a rule, say so in ONE line. For plain task work add no Cairn commentary.
 - Relay any `[Cairn]` note in one line at the top of your reply, and act on it.
 - Context filling up → with the cairn mod running, it compacts at clean breaks: just keep SESSION.md current (run `handoff` if it is stale). Without it, run `handoff` yourself, then tell me "type /clear".
 
 ### Routing — check EVERY new instruction before doing it
-If it belongs here, just do it, silently. **If in doubt, do it here.** When this session has no goal yet, the first instruction sets the goal (route: here). Otherwise act on the route yourself and start your reply with:
+If it belongs here, just do it, silently. **If in doubt, do it here.** When this session has no goal yet, the first instruction sets the goal (route: here). Only when you send it elsewhere, start your reply with:
 `↪ <what you did> — <why in ≤12 words>`
 
 | The instruction… | What you do on your own |

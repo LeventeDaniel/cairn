@@ -127,6 +127,14 @@ class Hooks(unittest.TestCase):
         self.assertIn("Cairn · Home", out)
         self.assertFalse(self.m.REGISTRY.exists() and "home" in self.m.REGISTRY.read_text())
 
+    def test_scratch_folders_are_not_registered(self):
+        import tempfile as tf
+        scratch = Path(tf.mkdtemp(prefix="scratch-"))
+        (scratch / ".git").mkdir()  # even a git folder under the temp dir is scratch
+        out = run(self.m, "session-start", stdin={"session_id": "s1", "cwd": str(scratch), "source": "startup"})
+        self.assertNotIn("New repo", out)
+        self.assertFalse(self.m.REGISTRY.exists() and scratch.name in self.m.REGISTRY.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

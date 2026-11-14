@@ -16,7 +16,7 @@ Subcommands (wired up by install.py):
 
 Only standard-library Python. Works on macOS, Linux and Windows.
 """
-import json, os, re, shutil, subprocess, sys, time
+import json, os, re, shutil, subprocess, sys, tempfile, time
 from datetime import date
 from pathlib import Path
 
@@ -333,6 +333,17 @@ def norm(p):
     return os.path.normcase(os.path.normpath(p))
 
 
+def registrable(root):
+    """A project worth registering: a git repo outside the system temp folder."""
+    try:
+        r = Path(root).resolve()
+        if Path(tempfile.gettempdir()).resolve() in (r, *r.parents):
+            return False
+        return (r / ".git").exists()
+    except OSError:
+        return False
+
+
 def registry_touch(root):
     """Find (or auto-add) the project for root and stamp today's date. Returns (name, was_new)."""
     REGISTRY.parent.mkdir(parents=True, exist_ok=True)
@@ -355,6 +366,10 @@ def registry_touch(root):
         write_text_atomic(REGISTRY, "\n".join(lines) + "\n")
         return f[0], False
     name = re.sub(r"[^A-Za-z0-9_.-]", "-", Path(root).name) or "project"
+    if not registrable(root):
+        # Scratch folders (temp dirs, non-git folders) are not projects: registering them cost a
+        # "ask the user for a purpose" turn in every throwaway session (bench: extra output tokens).
+        return name, False
     taken = {ln.lstrip("- ").split("|")[0].strip() for ln in lines if ln.startswith("-")}
     base, n = name, 2
     while name in taken:
