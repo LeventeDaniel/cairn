@@ -100,6 +100,7 @@ test('a compaction the app runs is logged as app; one Cairn queues is logged as 
     plugin: 'cairn', component: 'Pane', requestId: 'cairn', surface: 'desktop',
     props: { title: 'Cairn', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
   } as any)
+  await ui.press({ key: 'details' })
   expect((await ui.find({ type: 'Text', text: /Last 7 days: 2 compaction/ }))?.text).toContain('1 Cairn, 1 app')
   expect((await ui.find({ type: 'Text', text: /Estimate only/ }))).toBeTruthy()
   await ui.unmount()

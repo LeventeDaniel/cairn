@@ -4,6 +4,8 @@ import type { EngineInterface, Register, SessionMessage, SessionUsage } from 'cl
 import type { Compaction, Offer, Snap, Work, Workspace } from '../types'
 import { LEDGER_DEFAULTS, FILE as LEDGER_FILE, MEASURED_FILE, addEvent, measuredLines, parseLedger, parseMeasured, summaryLines } from './ledger'
 import type { LedgerEvent } from './ledger'
+import { advice, health, needsAndRunning } from './panel'
+import type { Item } from './panel'
 
 const VERSION = '0.7.0'
 const PANE = 'cairn'
@@ -49,6 +51,8 @@ const days = atom({ plugin: 'cairn', key: 'days' } as const, {} as Days, { shape
 const ledger = atom({ plugin: 'cairn', key: 'ledger' } as const, [] as LedgerEvent[], { shape: 'ledger-1' })
 /** Pane lines for measured (not estimated) numbers; see ledger.ts. */
 const measured = atom({ plugin: 'cairn', key: 'measured' } as const, [] as string[], { shape: 'measured-1' })
+/** Whether the pane's Details section is open (off by default). */
+const details = atom({ plugin: 'cairn', key: 'details' } as const, false, { shape: 'details-1' })
 const ws = atom({ plugin: 'cairn', key: 'ws' } as const,
   null as Workspace | null, { shape: 'ws-1' })
 
@@ -771,8 +775,9 @@ export const register: Register = on => {
   })
 
   // ---------------------------------------------------------- pane (7)
+  // Default view: what needs you, what runs, plan health. Everything else is under Details.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     const s = await read($, snap)
     const w = await read($, work)
     const cs = await read($, comps)
@@ -781,6 +786,7 @@ export const register: Register = on => {
     const dd = await read($, days)
     const led = await read($, ledger)
     const meas = await read($, measured)
+    const open = await read($, details)
     const now = await $.clock.now()
     const p = s.percent
     const color = s.level === 2 ? 'red' : s.level === 1 ? 'yellow' : 'green'
@@ -788,101 +794,121 @@ export const register: Register = on => {
     const filled = p === undefined ? 0 : Math.min(width, Math.round((p / 100) * width))
     const fh = pct(s.limits, 'five_hour'), sd = pct(s.limits, 'seven_day')
     const usageHigh = (fh ?? 0) >= cfg.usage_warn || (sd ?? 0) >= cfg.usage_warn
-    const advice =
-      s.level === 2 && cfg.compact_mode === 'off' ? 'Run handoff now, then type /clear.'
-      : o ? `Good moment to compact (${o.reason}): use the band above the prompt.`
-      : p !== undefined && p >= cfg.compact_soft && cfg.compact_mode === 'smart' ? 'Cairn will compact at the next clean break.'
-      : p !== undefined && p >= cfg.compact_at && cfg.compact_mode === 'auto' ? 'Cairn compacts at the end of this turn.'
-      : s.level === 1 ? 'Hand off at the next stopping point.'
-      : usageHigh ? 'Plan usage is high: prefer haiku/sonnet subagents.'
-      : 'All good.'
+    const { needs, running } = needsAndRunning(w2, s.inbox)
+    const hl = health(s, led, now, cfg.usage_warn, cfg)
+    const tip = advice(hl, s)
+    const row = (it: Item, mark: string, hot: boolean) => (
+      <Box flexDirection="column">
+        <Text color={hot ? 'yellow' : undefined}>{mark} {it.text}</Text>
+        {it.hint && <Text dimColor>   {it.hint}</Text>}
+      </Box>
+    )
+    const barW = 16
+    const barN = fh === undefined ? 0 : Math.min(barW, Math.round((fh / 100) * barW))
     return (
       <Box flexDirection="column">
-        <Text bold>Context</Text>
-        {p === undefined
-          ? <Text dimColor>No reading yet (fills in after the first reply).</Text>
-          : <Text color={color}>{'█'.repeat(filled)}{'░'.repeat(width - filled)} {p.toFixed(0)}%</Text>}
-        {s.tokens !== undefined && s.window > 0 &&
-          <Text dimColor>{k(s.tokens)} of {k(s.window)} tokens · compact {cfg.compact_mode}: done-task {cfg.compact_soft}% · calm {cfg.compact_at}% · hard {cfg.compact_hard}%</Text>}
+        <Text bold>Needs you</Text>
+        {needs.length === 0 ? <Text dimColor>Nothing needs you.</Text> : needs.map(n => row(n, '!', true))}
         <Text> </Text>
-        <Text bold>Plan usage</Text>
-        {fh === undefined && sd === undefined
-          ? <Text dimColor>No rate-limit reading.</Text>
-          : <Text color={usageHigh ? 'yellow' : undefined}>5h {fh?.toFixed(0) ?? '–'}% · 7d {sd?.toFixed(0) ?? '–'}%</Text>}
-        {s.usd !== undefined && <Text dimColor>Session cost ${s.usd.toFixed(2)}</Text>}
-        {Object.keys(dd).slice(-4).reverse().map(k => (
-          <Text dimColor>
-            {dayLine(k, dd[k]!)}
-          </Text>
-        ))}
+        <Text bold>Running now</Text>
+        {running.length === 0 ? <Text dimColor>Nothing is running.</Text> : running.map(n => row(n, '●', false))}
         <Text> </Text>
-        <Text bold>Savings</Text>
-        {summaryLines(led, dd, now, cfg).map((l, i) => (
-          <Text dimColor={i > 0 && l.startsWith('Estimate')}>{l}</Text>
-        ))}
-        {meas.map((l, i) => (
-          <Text color={i === 0 ? 'cyan' : undefined} dimColor={i > 0}>{l}</Text>
-        ))}
+        <Text bold>Your plan</Text>
+        {fh === undefined
+          ? <Text dimColor>No usage reading yet.</Text>
+          : <Text color={hl.level === 'high' ? 'yellow' : undefined}>{'█'.repeat(barN)}{'░'.repeat(barW - barN)} {fh.toFixed(0)}% of your 5-hour limit used</Text>}
+        {hl.saved && <Text dimColor>{hl.saved}</Text>}
+        {tip && <Text color="yellow">{tip}</Text>}
         <Text> </Text>
-        <Text bold>Work tracked</Text>
-        <Text dimColor>{w.files.length} files edited · {w.oks.length} recent commands ok</Text>
-        {editsBehind(w.files) >= 6 &&
-          <Text color="yellow">SESSION.md is {editsBehind(w.files)} edits behind: save the state with handoff.</Text>}
-        {w.fails.length > 0 && <Text color="yellow">Open failures: {w.fails.map(f => f.cmd.slice(0, 40)).join(' · ')}</Text>}
-        <Text> </Text>
-        <Text bold>Compactions</Text>
-        {cs.length === 0
-          ? <Text dimColor>None yet this session.</Text>
-          : cs.slice(-3).map(c => (
-            <Text dimColor={c.check !== 'patched'}>
-              {c.trigger}{c.isSubagent ? ' (subagent)' : ''}: {k(c.tokensBefore)} → {k(c.tokensAfter)} · trimmed {c.trimmedCount} ({k(c.trimmedChars / 4)} tok) · check {c.check}{c.fellBack ? ' · trim refused' : ''}
+        <Button key="details" label={open ? '▾ Hide details' : '▸ Details'} onPress={() => update($, details, v => !v)} />
+        {open && (
+          <Box flexDirection="column">
+            <Text> </Text>
+          <Text bold>Context</Text>
+          {p === undefined
+            ? <Text dimColor>No reading yet (fills in after the first reply).</Text>
+            : <Text color={color}>{'█'.repeat(filled)}{'░'.repeat(width - filled)} {p.toFixed(0)}%</Text>}
+          {s.tokens !== undefined && s.window > 0 &&
+            <Text dimColor>{k(s.tokens)} of {k(s.window)} tokens · compact {cfg.compact_mode}: done-task {cfg.compact_soft}% · calm {cfg.compact_at}% · hard {cfg.compact_hard}%</Text>}
+          <Text> </Text>
+          <Text bold>Plan usage</Text>
+          {fh === undefined && sd === undefined
+            ? <Text dimColor>No rate-limit reading.</Text>
+            : <Text color={usageHigh ? 'yellow' : undefined}>5h {fh?.toFixed(0) ?? '–'}% · 7d {sd?.toFixed(0) ?? '–'}%</Text>}
+          {s.usd !== undefined && <Text dimColor>Session cost ${s.usd.toFixed(2)}</Text>}
+          {Object.keys(dd).slice(-4).reverse().map(k => (
+            <Text dimColor>
+              {dayLine(k, dd[k]!)}
             </Text>
           ))}
-        <Text> </Text>
-        <Text bold>Workspace</Text>
-        {!w2
-          ? <Text dimColor>Loading (cairn.py workspace)…</Text>
-          : w2.repos.map(r => {
-            const live = r.sessions.filter(x => x.status === 'busy' || x.status === 'idle' || x.status === 'waiting')
+          <Text> </Text>
+          <Text bold>Savings</Text>
+          {summaryLines(led, dd, now, cfg).map((l, i) => (
+            <Text dimColor={i > 0 && l.startsWith('Estimate')}>{l}</Text>
+          ))}
+          {meas.map((l, i) => (
+            <Text color={i === 0 ? 'cyan' : undefined} dimColor={i > 0}>{l}</Text>
+          ))}
+          <Text> </Text>
+          <Text bold>Work tracked</Text>
+          <Text dimColor>{w.files.length} files edited · {w.oks.length} recent commands ok</Text>
+          {editsBehind(w.files) >= 6 &&
+            <Text color="yellow">SESSION.md is {editsBehind(w.files)} edits behind: save the state with handoff.</Text>}
+          {w.fails.length > 0 && <Text color="yellow">Open failures: {w.fails.map(f => f.cmd.slice(0, 40)).join(' · ')}</Text>}
+          <Text> </Text>
+          <Text bold>Compactions</Text>
+          {cs.length === 0
+            ? <Text dimColor>None yet this session.</Text>
+            : cs.slice(-3).map(c => (
+              <Text dimColor={c.check !== 'patched'}>
+                {c.trigger}{c.isSubagent ? ' (subagent)' : ''}: {k(c.tokensBefore)} → {k(c.tokensAfter)} · trimmed {c.trimmedCount} ({k(c.trimmedChars / 4)} tok) · check {c.check}{c.fellBack ? ' · trim refused' : ''}
+              </Text>
+            ))}
+          <Text> </Text>
+          <Text bold>Workspace</Text>
+          {!w2
+            ? <Text dimColor>Loading (cairn.py workspace)…</Text>
+            : w2.repos.map(r => {
+              const live = r.sessions.filter(x => x.status === 'busy' || x.status === 'idle' || x.status === 'waiting')
+              return (
+                <Box flexDirection="column">
+                  <Text>{r.name}{r.notes ? ` · ${r.notes} note(s) waiting` : ''}{r.worktrees ? ` · ${r.worktrees} worktree(s)` : ''}</Text>
+                  <Text dimColor>  goal: {r.goal ? r.goal.slice(0, 70) : 'none set'}</Text>
+                  {live.map(x => (
+                    <Text color={x.status === 'waiting' ? 'yellow' : undefined} dimColor={x.status === 'idle' && !x.warm}>
+                      {'  '}{x.status === 'busy' ? '●' : x.status === 'waiting' ? '!' : '○'} {x.title.slice(0, 40)} · {x.status} · {k(x.tokens ?? undefined)} · cache {x.warm ? 'warm' : 'cold'}
+                    </Text>
+                  ))}
+                  {live.length === 0 && <Text dimColor>  no live session{r.sessions.length ? ` · last ${ago(r.sessions[0]!.ageMin)} ago` : ''}</Text>}
+                </Box>
+              )
+            })}
+          {w2 && (w2.board ?? []).length > 0 && (() => {
+            const b = w2.board ?? []
+            const open = b.filter(t => t.status !== 'done' && t.status !== 'closed')
+            const done = b.filter(t => t.status === 'done').slice(0, 3)
             return (
               <Box flexDirection="column">
-                <Text>{r.name}{r.notes ? ` · ${r.notes} note(s) waiting` : ''}{r.worktrees ? ` · ${r.worktrees} worktree(s)` : ''}</Text>
-                <Text dimColor>  goal: {r.goal ? r.goal.slice(0, 70) : 'none set'}</Text>
-                {live.map(x => (
-                  <Text color={x.status === 'waiting' ? 'yellow' : undefined} dimColor={x.status === 'idle' && !x.warm}>
-                    {'  '}{x.status === 'busy' ? '●' : x.status === 'waiting' ? '!' : '○'} {x.title.slice(0, 40)} · {x.status} · {k(x.tokens ?? undefined)} · cache {x.warm ? 'warm' : 'cold'}
+                <Text>Board (Cairn Home) · {open.filter(t => t.status === 'running').length} running · {open.filter(t => t.status === 'waiting').length} waiting on you</Text>
+                {[...open, ...done].map(t => (
+                  <Text color={t.status === 'waiting' ? 'yellow' : undefined} dimColor={t.status === 'done' || t.status === 'queued'}>
+                    {'  '}{t.status === 'running' ? '●' : t.status === 'waiting' ? '!' : t.status === 'queued' ? '…' : '✓'} {t.id} {t.title.slice(0, 40)} · {t.status} · {t.model}/{t.effort}{t.status === 'running' && (w2.at - t.updated) / 60 >= 90 ? ` · quiet ${ago(Math.round((w2.at - t.updated) / 60))}, check it` : ''}{t.report ? ` · ${t.report.slice(0, 50)}` : ''}
                   </Text>
                 ))}
-                {live.length === 0 && <Text dimColor>  no live session{r.sessions.length ? ` · last ${ago(r.sessions[0]!.ageMin)} ago` : ''}</Text>}
               </Box>
             )
-          })}
-        {w2 && (w2.board ?? []).length > 0 && (() => {
-          const b = w2.board ?? []
-          const open = b.filter(t => t.status !== 'done' && t.status !== 'closed')
-          const done = b.filter(t => t.status === 'done').slice(0, 3)
-          return (
-            <Box flexDirection="column">
-              <Text>Board (Cairn Home) · {open.filter(t => t.status === 'running').length} running · {open.filter(t => t.status === 'waiting').length} waiting on you</Text>
-              {[...open, ...done].map(t => (
-                <Text color={t.status === 'waiting' ? 'yellow' : undefined} dimColor={t.status === 'done' || t.status === 'queued'}>
-                  {'  '}{t.status === 'running' ? '●' : t.status === 'waiting' ? '!' : t.status === 'queued' ? '…' : '✓'} {t.id} {t.title.slice(0, 40)} · {t.status} · {t.model}/{t.effort}{t.status === 'running' && (w2.at - t.updated) / 60 >= 90 ? ` · quiet ${ago(Math.round((w2.at - t.updated) / 60))}, check it` : ''}{t.report ? ` · ${t.report.slice(0, 50)}` : ''}
-                </Text>
-              ))}
-            </Box>
-          )
-        })()}
-        {w2 && (w2.stale ?? []).length > 0 &&
-          <Text color="yellow">Stale: {(w2.stale ?? []).map(s => `${s.name} ${s.worktrees.length} worktree(s)${s.worktrees.some(x => x.dirty) ? ' (uncommitted!)' : ''}, ${s.oldSessions} old session(s)`).join(' · ')}. Ask Cairn to clean up.</Text>}
-        {w2 && w2.unregistered.length > 0 &&
-          <Text dimColor>Not in REPOS.md: {w2.unregistered.map(u => `${u.title.slice(0, 30)} (${u.status})`).join(' · ')}</Text>}
-        <Text> </Text>
-        <Text bold>Inbox</Text>
-        {s.inbox.length === 0
-          ? <Text dimColor>No notes waiting.</Text>
-          : <Text color="yellow">Notes waiting for: {s.inbox.join(', ')}</Text>}
-        <Text> </Text>
-        <Text color={color}>{advice}</Text>
+          })()}
+          {w2 && (w2.stale ?? []).length > 0 &&
+            <Text color="yellow">Stale: {(w2.stale ?? []).map(s => `${s.name} ${s.worktrees.length} worktree(s)${s.worktrees.some(x => x.dirty) ? ' (uncommitted!)' : ''}, ${s.oldSessions} old session(s)`).join(' · ')}. Ask Cairn to clean up.</Text>}
+          {w2 && w2.unregistered.length > 0 &&
+            <Text dimColor>Not in REPOS.md: {w2.unregistered.map(u => `${u.title.slice(0, 30)} (${u.status})`).join(' · ')}</Text>}
+          <Text> </Text>
+          <Text bold>Inbox</Text>
+          {s.inbox.length === 0
+            ? <Text dimColor>No notes waiting.</Text>
+            : <Text color="yellow">Notes waiting for: {s.inbox.join(', ')}</Text>}
+          </Box>
+        )}
       </Box>
     )
   })

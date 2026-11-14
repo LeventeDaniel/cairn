@@ -28,6 +28,7 @@ test('a measure past warn draws the pane, toasts and feeds cairn.py state', asyn
   on('ui.toast', (_, e) => { toasts.push(e.text); return { value: undefined } })
   on('session.measure', (_, e) => ({ changed: e.changed }))
   on('clock.now', () => ({ value: 1000 }))
+  on('clock.after', () => ({ value: undefined }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
 
@@ -41,10 +42,13 @@ test('a measure past warn draws the pane, toasts and feeds cairn.py state', asyn
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
+    expect((await ui.find({ type: 'Text', text: /12% of your 5-hour/ }))?.text).toContain('12%')
+    expect((await ui.find({ type: 'Text', text: /Notes waiting for billing/ }))?.text).toContain('billing')
+    expect((await ui.find({ type: 'Text', text: /Context/ }))).toBeFalsy() // jargon sits behind Details
+    await ui.press({ key: 'details' })
+    expect((await ui.find({ type: 'Text', text: /next clean break/ }))).toBeFalsy()
     expect((await ui.find({ type: 'Text', text: /55%/ }))?.text).toContain('55%')
-    expect((await ui.find({ type: 'Text', text: /5h 12%/ }))?.text).toContain('7d 40%')
-    expect((await ui.find({ type: 'Text', text: /billing/ }))?.text).toContain('billing')
-    expect((await ui.find({ type: 'Text', text: /next clean break/ }))).toBeTruthy()
+    await ui.press({ key: 'details' }) // the open state is shared: close it for the next surface
     await ui.unmount()
   }
 
