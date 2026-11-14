@@ -243,5 +243,85 @@ class NotTyped(unittest.TestCase):
             os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
 
 
+class Edges(unittest.TestCase):
+    def test_new_repo_name_can_never_be_the_repos_folder_or_its_parent(self):
+        m = load(Path(tempfile.mkdtemp()))
+        self.assertEqual([m.repo_name(x) for x in ("..", ".", "../up", ".hidden", "my app!", "")],
+                         ["project", "project", "up", "hidden", "my-app", "project"])
+        m.CAIRN.mkdir(parents=True)
+        ws = m.HOME / "ws"
+        ws.mkdir()
+        m.CFG.write_text(json.dumps({"repos_dir": str(ws)}))
+        self.assertIn("CREATED project", run(m, "new-repo", "--name", ".", "--purpose", "x"))
+        self.assertFalse((ws / ".git").exists())
+
+    def test_audit_counts_only_this_projects_auto_memory(self):
+        m = load(Path(tempfile.mkdtemp()))
+        here = Path(tempfile.mkdtemp())
+        enc = m.re.sub(r"[^A-Za-z0-9]", "-", m.project_root(str(here)))
+        for name, lines in ((enc, 3), ("C--some-other-project", 500)):
+            d = m.HOME / "projects" / name / "memory"
+            d.mkdir(parents=True)
+            (d / "MEMORY.md").write_text("- a fact" + chr(10) * 1 + ("- x" + chr(10)) * (lines - 1))
+        old = os.getcwd()
+        os.chdir(here)
+        try:
+            import io
+            from contextlib import redirect_stdout
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                m.cmd_audit()
+        finally:
+            os.chdir(old)
+        out = buf.getvalue()
+        self.assertEqual(out.count("Auto memory"), 1)
+        self.assertNotIn("some-other-project", out)
+
+
+class AgentFields(unittest.TestCase):
+    """Fields of `claude agents --json` per code.claude.com/docs/en/agent-view: status busy|waiting|idle only
+    while the process lives, waitingFor while a prompt is open, state for background sessions."""
+
+    def setUp(self):
+        self.m = load(Path(tempfile.mkdtemp()))
+        run(self.m, "dispatch", "--repo", "a", "--title", "a: job", "--session", "local_j")
+        self.m.GONE_GRACE = 0
+
+    def row(self, **fields):
+        a = {"sessionId": "u1", "name": "a: job", "startedAt": time.time() * 1000, "kind": "interactive", **fields}
+        self.m._AGENTS = [{k: v for k, v in a.items() if v is not None}]
+        return json.loads(run(self.m, "board", "--json"))[0]
+
+    def test_an_open_prompt_is_recorded_and_cleared(self):
+        r = self.row(status="waiting", waitingFor="permission prompt")
+        self.assertEqual((r["status"], r["waitingFor"]), ("waiting", "permission prompt"))
+        self.assertIn("NEEDS THE USER NOW: permission prompt", run(self.m, "board"))
+        self.assertNotIn("waitingFor", self.row(status="idle"))       # answered, turn over
+        self.assertNotIn("waitingFor", self.row(status="busy"))
+
+    def test_a_prompt_beats_pending_background_work(self):
+        self.row(status="busy")
+        run(self.m, "stop", stdin={"session_id": "u1", "last_assistant_message": "x", "background_tasks": [{"id": "1"}]})
+        self.assertEqual(self.row(status="idle")["status"], "running")
+        self.assertEqual(self.row(status="waiting", waitingFor="input needed")["status"], "waiting")
+
+    def test_a_session_whose_process_is_gone_does_not_stay_running(self):
+        self.assertEqual(self.row(status="busy")["status"], "running")
+        b = json.loads(self.m.BOARD.read_text())
+        b["tasks"][0]["started"] -= 900
+        self.m.BOARD.write_text(json.dumps(b))
+        r = self.row(status=None)   # listed by --all, but no pid/status: the process has exited
+        self.assertEqual(r["status"], "closed")
+
+    def test_background_session_states(self):
+        self.assertEqual(self.row(status=None, kind="background", state="working")["status"], "running")
+        r = self.row(status=None, kind="background", state="blocked")
+        self.assertEqual((r["status"], r["waitingFor"]), ("waiting", "input needed"))
+        b = json.loads(self.m.BOARD.read_text())
+        b["tasks"][0]["started"] -= 900
+        self.m.BOARD.write_text(json.dumps(b))
+        self.assertEqual(self.row(status=None, kind="background", state="done")["status"], "closed")
+
+
 if __name__ == "__main__":
     unittest.main()

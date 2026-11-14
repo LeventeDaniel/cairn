@@ -59,6 +59,8 @@ export type WsSession = {
   /** busy, idle or waiting while it runs (from `claude agents`); closed otherwise */
   status: string
   kind?: string | null
+  /** the open prompt when status is 'waiting' (permission prompt, input needed, …) */
+  waitingFor?: string | null
   ageMin: number
   tokens?: number | null
   /** last activity inside the prompt cache TTL */
@@ -84,6 +86,8 @@ export type BoardTask = {
   session: string; cliSession?: string
   status: 'running' | 'waiting' | 'done' | 'queued' | 'closed'
   started: number; updated: number; report: string
+  /** set while the worker has a prompt open for the user (permission prompt, input needed, …) */
+  waitingFor?: string
   /** the note is older than the worker's last turn end */
   reportStale?: boolean
   /** from the worker's own Stop hook: the last line it said, when (epoch s), and background tasks/wakeups it left pending */

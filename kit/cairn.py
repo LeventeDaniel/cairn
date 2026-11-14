@@ -439,9 +439,11 @@ def repeated_procedures(min_count=3):
     return [k for k, v in counts.items() if v >= min_count and re.sub(r"\W+", "-", k) not in have]
 
 
-def router_context(name, sess):
+def router_context(name, sess, restored=False):
     goal = "not set yet"
-    if sess.exists():
+    if restored:
+        goal = "in SESSION.md above"  # just printed in full: don't spend the tokens twice
+    elif sess.exists():
         m = re.search(r"##\s*Goal[^\n]*\n+([^\n#]+)", sess.read_text(encoding="utf-8", errors="replace"))
         if m:
             goal = m.group(1).strip()[:200]
@@ -501,7 +503,8 @@ def cmd_session_start():
     out = []
     dg = ""
     sess = session_file(cwd)
-    if sess.exists():
+    restored = sess.exists()
+    if restored:
         out.append("[Cairn] Saved working state from SESSION.md is below. If the user's first message "
                    "starts with '[Started by Cairn', IGNORE it (it belongs to another session). If the user's "
                    "next instruction is unrelated, treat that as the new goal. Otherwise continue from here:\n"
@@ -528,7 +531,18 @@ def cmd_session_start():
     if new:
         out.append(f"[Cairn] New repo '{name}' added to ~/.claude/REPOS.md. Ask the user, in "
                    "one line, for a one-line purpose and fill it in (replace the '?').")
-    out.append(router_context(name, sess))
+    elif source == "startup" and any(r["name"] == name and r["purpose"] == "?" for r in registry()):
+        # The first ask went unanswered: the '?' then stayed for good, and Home and the router line
+        # could not tell what this repo is for. Once a week, have Claude fill it in from the repo itself.
+        c1 = read_json(CFG, {}) or {}
+        asked = c1.get("purpose_nudged") or {}
+        if (date.today() - date.fromisoformat((asked.get(name) or "2000-01-01")[:10])).days >= 7:
+            asked[name] = date.today().isoformat()
+            c1["purpose_nudged"] = asked
+            write_json(CFG, c1)
+            out.append(f"[Cairn] ~/.claude/REPOS.md still has '?' as the purpose of '{name}'. Replace the '?' yourself with "
+                       "one line taken from this repo's README or CLAUDE.md, silently; ask the user only if neither says.")
+    out.append(router_context(name, sess, restored))
     write_json(CAIRN / "marks" / f"{sid}.json", {"reset_line": reset_line, "repo": name})
     note = take_inbox(name)
     if note:
@@ -585,7 +599,14 @@ def cmd_audit():
         add("Project CLAUDE.md", cand)
     for r in sorted((cwd / ".claude" / "rules").glob("*.md")) if (cwd / ".claude" / "rules").exists() else []:
         add("Project rule", r)
-    for mem in (HOME / "projects").glob("*/memory/MEMORY.md") if (HOME / "projects").exists() else []:
+    # Auto memory is per project (keyed by the main repo's path, shared by its worktrees): only this
+    # project's file loads here. Listing every project's made each session look far heavier than it is.
+    enc = re.sub(r"[^A-Za-z0-9]", "-", project_root(str(cwd)))
+    mem = HOME / "projects" / enc / "memory" / "MEMORY.md"
+    if not mem.is_file():
+        mem = next((m for m in (HOME / "projects").glob("*/memory/MEMORY.md")
+                    if m.parent.parent.name.lower() == enc.lower()), mem) if (HOME / "projects").exists() else mem
+    for mem in [mem] if mem.is_file() else []:
         t = mem.read_text(encoding="utf-8", errors="replace")
         loaded = "\n".join(t.splitlines()[:200])
         rows.append((tok(loaded), "Auto memory (first 200 lines load)", f"{len(t.splitlines())} lines", str(mem)))
@@ -804,6 +825,7 @@ def workspace():
             age = (now - m) / 60
             sessions.append({"id": f.stem, "title": a.get("name") or title or f.stem[:8],
                              "status": a.get("status") or "closed", "kind": a.get("kind"),
+                             "waitingFor": a.get("waitingFor") if a.get("status") == "waiting" else None,
                              "ageMin": round(age), "tokens": tokens, "warm": age < ttl})
             claimed.add(f.stem)
         rp = Path(r["path"])
@@ -906,7 +928,8 @@ def cmd_cleanup():
     print("\nNext: show the user this list in a few lines and ask before removing anything. A clean worktree goes with "
           "`git worktree remove <path>` (then delete its branch if merged); one with uncommitted changes needs the "
           "user's decision. Old desktop sessions: archive them with the app's session tools (list, then archive), "
-          "with the user's OK. Transcripts themselves expire by Claude Code's cleanupPeriodDays.")
+          "with the user's OK. Terminal transcripts expire by Claude Code's cleanupPeriodDays; desktop-app ones only "
+          "when desktopSessionCleanupPeriodDays is set.")
 
 
 # ---------------------------------------------------------------- board (Cairn Home's task list)
@@ -1003,6 +1026,11 @@ def board_refresh(b, agents=None):
             continue  # an explicit close is final; only an auto-close (session gone) may come back
         a = match.get(t["id"])
         now = time.time()
+        # `status` (and `pid`) exist only while the session's process is alive; a background session also has
+        # `state` (code.claude.com/docs/en/agent-view). No status and not working/blocked: it has exited.
+        # Such a row used to keep its last status ("running") for good.
+        if a is not None and a.get("status") is None and a.get("state") not in ("working", "blocked"):
+            a = None
         if a is None:
             # Not on one look: a single short or partial answer from the CLI closed live workers
             # (seen live), and nothing reopened them.
@@ -1014,11 +1042,19 @@ def board_refresh(b, agents=None):
             continue
         t.pop("goneSince", None)
         t["cliSession"] = a.get("sessionId")
-        st = a.get("status")
-        new = "running" if st == "busy" else "waiting" if st in ("idle", "waiting") else t["status"]
-        if st == "busy":
+        st, state = a.get("status"), a.get("state")
+        busy = st == "busy" or (st is None and state == "working")
+        # waiting = a prompt is open (waitingFor says which); idle = its turn is over. Both show under
+        # "waiting", but only the first is the worker asking for the user.
+        asks = (a.get("waitingFor") or "input needed") if st == "waiting" or state == "blocked" else ""
+        new = "running" if busy else "waiting" if st in ("idle", "waiting") or asks else t["status"]
+        if asks:
+            t["waitingFor"] = asks
+        else:
+            t.pop("waitingFor", None)
+        if busy:
             t.pop("pending", None)  # a new turn: what the last one left running is out of date
-        elif new == "waiting" and t.get("pending") and now - t.get("turnEnded", 0) < PENDING_GRACE:
+        elif new == "waiting" and not asks and t.get("pending") and now - t.get("turnEnded", 0) < PENDING_GRACE:
             new = "running"  # its turn ended with background work or a wakeup pending: it wakes itself
         if new == "waiting" and t["status"] == "running":
             t["idleSince"] = time.time()
@@ -1127,6 +1163,8 @@ def cmd_board():
         print(f"{mark.get(t['status'], '?')} {t['id']:4} {t['status']:7} {t['title'][:50]:50} {t['model']}/{t['effort']}"
               f"  {age} min" + (f"\n         {t['report']}" + (" (note from before its last turn)" if t.get("reportStale") else "")
                              if t.get("report") else ""))
+        if t.get("waitingFor") and t["status"] == "waiting":
+            print(f"         NEEDS THE USER NOW: {t['waitingFor']}")
         if t.get("last") and t["status"] in ("running", "waiting"):
             ago = round((time.time() - t.get("turnEnded", time.time())) / 60)
             print(f"         its last turn ended {ago} min ago: {t['last'][:160]}"
@@ -1208,6 +1246,11 @@ def create_repo(name, purpose, c=None):
     return repo, None
 
 
+def repo_name(raw, default="project"):
+    """A folder name for a new repo. Leading dots go: '.' and '..' would be repos_dir itself or its parent."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "-", raw or "").strip("-.") or default
+
+
 def cmd_new_repo():
     """Create the folder + registry line only (Home then starts the worker with the app's session tool)."""
     import argparse
@@ -1215,7 +1258,7 @@ def cmd_new_repo():
     ap.add_argument("--name", required=True)
     ap.add_argument("--purpose", required=True)
     a = ap.parse_args(sys.argv[2:])
-    name = re.sub(r"[^A-Za-z0-9_.-]", "-", a.name).strip("-") or "project"
+    name = repo_name(a.name)
     repo, err = create_repo(name, a.purpose)
     if err:
         print(err)
@@ -1237,7 +1280,7 @@ def cmd_spawn():
     ap.add_argument("--dry-run", action="store_true", help="print the command and prompt, start nothing")
     a = ap.parse_args(sys.argv[2:])
     c = cfg()
-    name = re.sub(r"[^A-Za-z0-9_.-]", "-", a.name).strip("-") or "task"
+    name = repo_name(a.name, "task")
 
     # daily cap so it can't run away with your usage
     log = CAIRN / "spawned.md"

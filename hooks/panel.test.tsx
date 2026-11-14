@@ -44,3 +44,12 @@ test('a waiting task shows the worker\'s own last line once the note is older th
   expect(waitingHint({ ...base, report: 'still running', reportStale: true }, 0)).toBe('Finished its turn: open it and check')
   expect(waitingHint({ ...base, report: '', last: 'Started the run.', pending: 1, turnEnded: 60 }, 2760)).toBe('Quiet for 45 min with background work pending: check it')
 })
+
+test('a worker with a prompt open says so and is listed first', () => {
+  const mk = (id: string, t: string, extra: object) => ({ id, repo: 'r', title: t, kind: 'k', model: 'm', effort: 'e', session: 'local_' + id, status: 'waiting' as const, started: 0, updated: 0, report: '', ...extra })
+  const board = [mk('t1', 'r: finished', { last: 'All done.' }), mk('t2', 'r: stuck', { waitingFor: 'permission prompt', report: 'old note' })]
+  const r = needsAndRunning(ws({ board, repos: [] }), ['billing'])
+  expect(r.needs.map(n => n.text)).toEqual(['r: stuck', 'r: finished', 'Notes waiting for billing'])
+  expect(r.needs[0]!.hint).toBe('Waiting for you: permission prompt')
+  expect(r.needs[1]!.hint).toBe('Finished its turn: All done.')
+})

@@ -172,6 +172,20 @@ class Hooks(unittest.TestCase):
         out = self.prompt("other", self.repo, "also please redesign the marketing website header banner colours today")
         self.assertNotIn("Cairn Home", out)
 
+    def test_restored_goal_is_not_repeated_in_the_router_line(self):
+        out = run(self.m, "session-start", stdin={"session_id": "r1", "cwd": str(self.repo), "source": "resume"})
+        self.assertEqual(out.count("Ship the invoice exporter"), 1)
+        self.assertIn("goal: in SESSION.md above", out)
+
+    def test_unknown_purpose_is_filled_in_by_claude_once_a_week(self):
+        self.m.REGISTRY.write_text(f"# Repo registry\n- example-a | {self.repo} | ? | active | 2026-01-01\n")
+        start = lambda: run(self.m, "session-start", stdin={"session_id": "r2", "cwd": str(self.repo), "source": "startup"})
+        self.assertIn("still has '?' as the purpose of 'example-a'", start())
+        self.assertNotIn("still has '?'", start())  # not again this week
+        self.m.REGISTRY.write_text(f"# Repo registry\n- example-a | {self.repo} | invoices | active | 2026-01-01\n")
+        self.m.CFG.write_text("{}")
+        self.assertNotIn("still has '?'", start())  # a purpose is there: nothing to ask
+
     def test_home_session_start_skips_registry(self):
         self.m.HOME_DIR.mkdir(parents=True)
         out = run(self.m, "session-start", stdin={"session_id": "h", "cwd": str(self.m.HOME_DIR), "source": "startup"})

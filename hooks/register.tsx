@@ -148,11 +148,16 @@ async function refreshWorkspace($: EngineInterface, force = false) {
     const speak = await inHome($, claudeDir($.plugin.root))
     for (const t of speak ? w.board ?? [] : []) {
       const was = boardSeen.get(t.id)
-      if (boardSeen.size > 0 && was !== undefined && was !== t.status && (t.status === 'done' || t.status === 'waiting')) {
-        $.ui.toast((t.status === 'done' ? 'Finished: ' : 'Needs you: ') + t.title.slice(0, 50) + (t.report && !t.reportStale ? ' - ' + t.report.slice(0, 60) : ''))
+      const asks = t.status === 'waiting' && t.waitingFor ? t.waitingFor : ''
+      const [wasStatus, wasAsks] = (was ?? '|').split('|')
+      // A status change, or a prompt that just opened (a worker stuck on a permission prompt is the urgent case).
+      if (boardSeen.size > 0 && was !== undefined && (t.status === 'done' || t.status === 'waiting') &&
+          (wasStatus !== t.status || (asks && asks !== wasAsks))) {
+        const why = asks || (t.report && !t.reportStale ? t.report.slice(0, 60) : t.last?.slice(0, 60) ?? '')
+        $.ui.toast((t.status === 'done' ? 'Finished: ' : 'Needs you: ') + t.title.slice(0, 50) + (why ? ' - ' + why : ''))
       }
     }
-    boardSeen = new Map((w.board ?? []).map(t => [t.id, t.status]))
+    boardSeen = new Map((w.board ?? []).map(t => [t.id, `${t.status}|${t.status === 'waiting' && t.waitingFor ? t.waitingFor : ''}`]))
     await update($, ws, () => w)
   } catch (err) {
     $.ui.log(`cairn: workspace refresh failed: ${String(err)}`)

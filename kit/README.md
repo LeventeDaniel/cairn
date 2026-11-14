@@ -28,14 +28,16 @@ Cairn pane: `claude plugin install cairn@cairn`
 
 ## Keep every computer in sync (recommended)
 Put this folder in a private git repo, clone it to `~/.claude/cairn/kit-repo` on each computer,
-and run `python3 install.py` from there. Updates: `git pull && python3 install.py`.
+and run `python3 install.py` from there. Updates: `git pull && python3 install.py`, then
+`claude plugin update cairn@cairn` if you use the mod. A mod added from a local folder is loaded in place from that
+folder instead, so keep that folder up to date. The installer says which applies when the mod is older than the checkout.
 
 ## What you do
 Nothing, mostly. With the Cairn mod installed, context is compacted at clean breaks; without it,
 type `/clear` when Cairn tells you. A weekly check for new Claude Code features and a weekly
 tidy-up offer come once a week per computer.
 
-Skills: `/handoff`, `/pass`, `/repos`, `/where-to-run`, `/context-audit`, `/skill-scout`, `/cairn-update`, `dispatch` (Home's routine).
+Skills: `/handoff`, `/pass`, `/repos`, `/where-to-run`, `/context-audit`, `/skill-scout`, `/cairn-update`, `route` (where a new instruction runs), `dispatch` (Home's routine).
 
 ## Cairn Home (one place to type new work)
 Open a new Code-tab session in `~/.claude/cairn/home` and just say what you want. Home never does the work: it

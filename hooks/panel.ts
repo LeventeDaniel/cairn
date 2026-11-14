@@ -32,6 +32,7 @@ const title = (t: string) => clip(t, 48)
  * that the worker's own last line (written by its Stop hook) is the truth, not an old "still running".
  */
 export function waitingHint(t: BoardTask, now: number): string {
+  if (t.waitingFor) return `Waiting for you: ${t.waitingFor}`
   if (t.report && !t.reportStale) return clip(t.report, 70)
   if (t.pending && t.turnEnded) return `Quiet for ${Math.round((now - t.turnEnded) / 60)} min with background work pending: check it`
   return t.last ? clip(`Finished its turn: ${t.last}`, 90) : 'Finished its turn: open it and check'
@@ -59,10 +60,13 @@ export function needsAndRunning(w: Workspace | null, inbox: readonly string[]): 
   for (const r of w.repos) {
     for (const s of r.sessions) {
       if (seen.has(s.id) || seen.has(s.title)) continue
-      if (s.status === 'waiting') needs.push({ text: title(s.title), hint: 'Waiting for your answer', href: sessionHref(s.id) })
+      if (s.status === 'waiting') needs.push({ text: title(s.title), hint: s.waitingFor ? `Waiting for you: ${s.waitingFor}` : 'Waiting for your answer', href: sessionHref(s.id) })
       else if (s.status === 'busy') running.push({ text: title(s.title), href: sessionHref(s.id) })
     }
   }
+  // A worker with a prompt open comes first: it is stuck until answered; the rest only wait to be read.
+  const open = new Set((w.board ?? []).filter(t => t.status === 'waiting' && t.waitingFor).map(t => title(t.title)))
+  needs.sort((a, b) => Number(open.has(b.text)) - Number(open.has(a.text)))
   if (inbox.length) needs.push({ text: `Notes waiting for ${inbox.join(', ')}`, hint: 'They show up in your next session there' })
   return { needs, running }
 }
