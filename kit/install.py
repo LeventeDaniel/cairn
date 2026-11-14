@@ -15,7 +15,7 @@ CAIRN = HOME / "cairn"
 SETTINGS = HOME / "settings.json"
 CLAUDE_MD = HOME / "CLAUDE.md"
 AGENTS = ["scout", "researcher", "architect", "Explore"]
-SKILLS = ["handoff", "pass", "repos", "context-audit", "skill-scout", "cairn-update", "where-to-run", "dispatch"]
+SKILLS = ["handoff", "pass", "repos", "context-audit", "skill-scout", "cairn-update", "where-to-run", "dispatch", "route"]
 MARK = re.compile(r"\n?<!-- (?:context-coach|cairn):start -->.*?<!-- (?:context-coach|cairn):end -->\n?", re.S)
 OLD = HOME / "coach"  # Cairn was called Context Coach until 2026-11-13
 # Opt-in (`install.py --routine-allow`): checks and local git bookkeeping that never leave the machine or spend money.
@@ -96,7 +96,8 @@ def install():
         shutil.copy2(HERE / "agents" / f"{a}.md", HOME / "agents" / f"{a}.md")
     for sk in SKILLS:
         (HOME / "skills" / sk).mkdir(parents=True, exist_ok=True)
-        shutil.copy2(HERE / "skills" / sk / "SKILL.md", HOME / "skills" / sk / "SKILL.md")
+        text = (HERE / "skills" / sk / "SKILL.md").read_text(encoding="utf-8").replace("{{SPAWN}}", cmd("spawn"))
+        (HOME / "skills" / sk / "SKILL.md").write_text(text, encoding="utf-8")
     reg = HOME / "REPOS.md"
     old_reg = HOME / "PROJECTS.md"
     if not reg.exists() and old_reg.exists() and "# Project registry" in old_reg.read_text(encoding="utf-8", errors="ignore"):

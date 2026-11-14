@@ -71,6 +71,17 @@ class Install(unittest.TestCase):
         self.assertFalse((repos / "my-new").exists())
         self.assertNotIn("my-new", (self.cl / "REPOS.md").read_text(encoding="utf-8"))
 
+    def test_block_is_slim_and_routing_lives_in_the_route_skill(self):
+        self.install()
+        block = (self.cl / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertLess(len(block), 2600)
+        self.assertIn("`route` skill", block)
+        self.assertNotIn("{{SPAWN}}", block)
+        skill = (self.cl / "skills" / "route" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("cairn.py", skill)
+        self.assertIn("spawn --where", skill)
+        self.assertNotIn("{{SPAWN}}", skill)
+
 
 if __name__ == "__main__":
     unittest.main()
