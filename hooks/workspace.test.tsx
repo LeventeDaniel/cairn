@@ -35,6 +35,7 @@ const WS = {
 
 const afters: number[] = []
 const toasts: string[] = []
+let cwdNow = 'C:/r/example-a'
 
 function engine(on: any, settings: Record<string, unknown>, long = { n: 0 }) {
   const runs: string[][] = []
@@ -42,6 +43,7 @@ function engine(on: any, settings: Record<string, unknown>, long = { n: 0 }) {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 's1' }))
+  on('session.cwd', () => ({ value: cwdNow }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 100000, window: 1000000, percent: 10 }, rateLimits: [], cost: { usd: 2.5 } } }))
   on('settings.read', (_: any, e: any) => ({ value: e?.key ? settings[e.key] : settings }))
   on('process.run', (_: any, e: any) => { runs.push([...e.argv]); return { value: { exitCode: 0, stdout: JSON.stringify(WS), stderr: '' } } })
@@ -157,6 +159,7 @@ test('six edits after SESSION.md was last written make the pane ask for a handof
 
 test('a board task that finishes or starts waiting on you raises a toast', async ($, on) => {
   toasts.length = 0
+  cwdNow = 'C:/Users/me/.claude/cairn/home'
   const wasRunning = WS.board![1]!
   engine(on, { hooks: HOOKS })
   on('command.run', () => ({ text: 'ok' }))
@@ -169,4 +172,19 @@ test('a board task that finishes or starts waiting on you raises a toast', async
   await settle()
   expect(toasts.some(t => t.startsWith('Finished: example-a: new header'))).toBe(true)
   wasRunning.status = 'running'
+  cwdNow = 'C:/r/example-a'
+})
+
+test('sessions outside Cairn Home stay quiet when the board changes', async ($, on) => {
+  toasts.length = 0
+  const t = WS.board![1]!
+  engine(on, { hooks: HOOKS })
+  on('command.run', () => ({ text: 'ok' }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await settle()
+  t.status = 'done'
+  await $.command.run({ command: 'cairn', args: '' } as any)
+  await settle()
+  t.status = 'running'
+  expect(toasts.length).toBe(0)
 })

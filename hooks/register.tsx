@@ -131,7 +131,9 @@ async function refreshWorkspace($: EngineInterface, force = false) {
     const key = JSON.stringify({ ...w, at: 0 })
     changed = key !== wsKey
     wsKey = key
-    for (const t of w.board ?? []) {
+    // Only Cairn Home speaks for the board; other open sessions stay quiet.
+    const speak = await inHome($, claudeDir($.plugin.root))
+    for (const t of speak ? w.board ?? [] : []) {
       const was = boardSeen.get(t.id)
       if (boardSeen.size > 0 && was !== undefined && was !== t.status && (t.status === 'done' || t.status === 'waiting')) {
         $.ui.toast((t.status === 'done' ? 'Finished: ' : 'Needs you: ') + t.title.slice(0, 50) + (t.report ? ' - ' + t.report.slice(0, 60) : ''))
