@@ -196,6 +196,12 @@ async function record($: EngineInterface, tool: string, input: Record<string, un
   }
 }
 
+/** How many files were edited after SESSION.md was last written (all of them if it never was). */
+function editsBehind(files: readonly string[]): number {
+  const i = files.map(f => baseName(f).toUpperCase()).lastIndexOf('SESSION.MD')
+  return files.length - (i + 1)
+}
+
 // ------------------------------------------------------------ instructions (2, 6)
 async function sessionNotes($: EngineInterface): Promise<{ goal?: string; next?: string }> {
   try {
@@ -742,6 +748,8 @@ export const register: Register = on => {
         <Text> </Text>
         <Text bold>Work tracked</Text>
         <Text dimColor>{w.files.length} files edited · {w.oks.length} recent commands ok</Text>
+        {editsBehind(w.files) >= 6 &&
+          <Text color="yellow">SESSION.md is {editsBehind(w.files)} edits behind: save the state with handoff.</Text>}
         {w.fails.length > 0 && <Text color="yellow">Open failures: {w.fails.map(f => f.cmd.slice(0, 40)).join(' · ')}</Text>}
         <Text> </Text>
         <Text bold>Compactions</Text>

@@ -139,3 +139,17 @@ test('the pane adds up cost per day and shows peak plan usage', async ($, on) =>
   expect((await ui.find({ type: 'Text', text: /01-01 \$2\.50/ }))?.text).toContain('1 sessions')
   await ui.unmount()
 })
+
+test('six edits after SESSION.md was last written make the pane ask for a handoff', async ($, on) => {
+  engine(on, { hooks: HOOKS })
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ turnId: 't', text: 'go' } as any)
+  await $.tool.call({ tool: 'Write', file_path: 'C:/r/SESSION.md' } as any)
+  for (let i = 0; i < 6; i++) await $.tool.call({ tool: 'Edit', file_path: `C:/r/f${i}.ts` } as any)
+  await $.turn.complete({ turnId: 't', reason: 'answer', answer: 'done', durationMs: 1, isAborted: false } as any)
+  await settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' } as any)
+  expect((await ui.find({ type: 'Text', text: /edits behind/ }))?.text).toContain('6 edits behind')
+  await ui.unmount()
+})
