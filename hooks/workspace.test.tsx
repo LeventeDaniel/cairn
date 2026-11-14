@@ -188,3 +188,15 @@ test('sessions outside Cairn Home stay quiet when the board changes', async ($, 
   t.status = 'running'
   expect(toasts.length).toBe(0)
 })
+
+test('a running board task with no news for 90 minutes is marked to check', async ($, on) => {
+  const old = WS.at
+  WS.at = 2 + 3 * 3600
+  engine(on, { hooks: HOOKS })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' } as any)
+  expect((await ui.find({ type: 'Text', text: /t3 example-a: new header/ }))?.text).toContain('quiet 3 h, check it')
+  await ui.unmount()
+  WS.at = old
+})

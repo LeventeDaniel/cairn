@@ -798,7 +798,7 @@ export const register: Register = on => {
               <Text>Board (Cairn Home) · {open.filter(t => t.status === 'running').length} running · {open.filter(t => t.status === 'waiting').length} waiting on you</Text>
               {[...open, ...done].map(t => (
                 <Text color={t.status === 'waiting' ? 'yellow' : undefined} dimColor={t.status === 'done' || t.status === 'queued'}>
-                  {'  '}{t.status === 'running' ? '●' : t.status === 'waiting' ? '!' : t.status === 'queued' ? '…' : '✓'} {t.id} {t.title.slice(0, 40)} · {t.status} · {t.model}/{t.effort}{t.report ? ` · ${t.report.slice(0, 50)}` : ''}
+                  {'  '}{t.status === 'running' ? '●' : t.status === 'waiting' ? '!' : t.status === 'queued' ? '…' : '✓'} {t.id} {t.title.slice(0, 40)} · {t.status} · {t.model}/{t.effort}{t.status === 'running' && (w2.at - t.updated) / 60 >= 90 ? ` · quiet ${ago(Math.round((w2.at - t.updated) / 60))}, check it` : ''}{t.report ? ` · ${t.report.slice(0, 50)}` : ''}
                 </Text>
               ))}
             </Box>
