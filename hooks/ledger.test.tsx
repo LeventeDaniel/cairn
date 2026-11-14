@@ -118,3 +118,42 @@ test('measured lines are labelled and never invent an A/B result', () => {
   expect(ab.join(' ')).toContain('Small sample')
   expect(parseMeasured('nope')).toBe(null)
 })
+
+test('a compaction after the cache already expired is not booked as a cold re-read avoided', async ($, on) => {
+  // With the cache gone the summarizing request itself reads the history uncached; only the guard, which
+  // compacts while the cache is still warm, avoids that read.
+  const files: Record<string, string> = {}
+  let running = () => {}
+  let release = () => {}
+  const started = new Promise<void>(r => { running = r })
+  const gate = new Promise<void>(r => { release = r })
+  on('command.register', () => ({ value: { command: 'cairn' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: 's1' }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 200000, window: 1000000, percent: 20 }, rateLimits: [] } }))
+  on('store.get', () => ({ value: { s1: { at: NOW - 3 * 3600000, tokens: 200000 } } }))
+  on('store.set', () => ({ value: undefined }))
+  on('fs.read', (_: any, e: any) => ({ value: files[norm(e.path)] ?? '{}' }))
+  on('fs.list', () => ({ value: [] }))
+  on('fs.write', (_: any, e: any) => { files[norm(e.path)] = e.content ?? e.text ?? e.data; return { value: undefined } })
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: NOW }))
+  on('clock.after', () => ({ value: undefined }))
+  on('command.run', async ($2: any, e: any) => {
+    if (e.command === 'compact') { running(); await gate }
+    return { text: 'ok' }
+  })
+  on('session.compact', () => ({ messages: [{ role: 'user', text: 's', toolUses: [] }], tokensBefore: 200000, tokensAfter: 20000 }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await started // the cold-start compaction Cairn queued is running
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'hi', toolUses: [] }] } as any)
+  release()
+  for (let i = 0; i < 800; i++) await Promise.resolve()
+  const key = Object.keys(files).find(k => k.endsWith('cairn/state/ledger.json'))!
+  const comps = (JSON.parse(files[key]!) as LedgerEvent[]).filter(e => e.kind === 'compaction')
+  expect(comps.map(e => (e as any).by)).toEqual(['cairn'])
+  expect((comps[0] as any).cold).toBeUndefined()
+})

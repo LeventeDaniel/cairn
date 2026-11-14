@@ -97,7 +97,7 @@ let turnDone = ''      // what finished, '' if nothing
 let turnSeq = 0        // main-loop turns started; an idle timer checks nothing new began
 let snoozedTo = 0      // "Not now": no new offer below this %
 let cairnRun = false   // a compaction Cairn queued is running (the app's own are not)
-let coldRun = false    // ...and it was for a cold or soon-cold prompt cache
+let coldRun = false    // ...and it ran while the cache was still warm, just before it expired (the guard)
 let compactions = 0    // main-loop compactions done; a cache timer checks none ran since
 
 /** True when this session runs in Cairn Home's folder (~/.claude/cairn/home). */
@@ -600,14 +600,16 @@ async function coldCheck($: EngineInterface) {
   await warned($, 'cold', last.tokens)
   await update($, offer, () => ({
     percent, at: now, cold: true,
-    reason: `away ${away}, the prompt cache expired: the next reply re-reads ${k(last.tokens)} tokens at full price, compacting first makes it and later replies cheaper`,
+    reason: `away ${away}, the prompt cache expired: ${k(last.tokens)} tokens are re-read at full price once either way, compacting first makes the replies after that cheaper`,
   }))
-  // Nobody is at the screen to click the band: compact now, before the first reply re-reads it all.
+  // Nobody is at the screen to click the band: compact now, so the replies after this one are cheap.
   // If it can't run, the offer stays up as the fallback.
+  // Not a "cold re-read avoided" in the ledger: with the cache already expired the summarizing request
+  // itself reads the whole history uncached (code.claude.com/docs/en/prompt-caching, "Compacting the
+  // conversation"). Only the guard, which compacts while the cache is still warm, avoids that read.
   if ((cfg.compact_mode === 'smart' || cfg.compact_mode === 'auto') && !(await finishedWorker($))) {
     $.ui.toast(`Cairn is compacting: away ${away}, the prompt cache expired`)
     tries = 0
-    coldRun = true
     queueCompact($)
   }
 }
