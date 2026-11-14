@@ -355,6 +355,18 @@ class StopFailure(unittest.TestCase):
         self.assertNotIn("cut off", ask("h1", self.m.HOME_DIR))   # not on every prompt
         self.assertNotIn("cut off", ask("w9", self.m.HOME))       # only Home relays it
 
+    def test_a_plain_stop_that_only_carries_the_limit_notice_counts_as_cut_off(self):
+        run(self.m, "stop", stdin={"session_id": "u1", "hook_event_name": "Stop", "last_assistant_message": "Done."})
+        run(self.m, "stop", stdin={"session_id": "u1", "hook_event_name": "Stop",
+                                   "last_assistant_message": "You've hit your 5-hour limit \u00b7 resets 7:10pm (Europe/Bucharest)"})
+        r = json.loads(run(self.m, "board", "--json"))[0]
+        self.assertEqual(r["stopped"], "rate_limit")
+        self.assertIn("resets 7:10pm", run(self.m, "board"))
+        # a real answer that merely mentions a limit is not a cut-off
+        run(self.m, "stop", stdin={"session_id": "u1", "last_assistant_message":
+                                   "Fixed the retry.\nYou may have hit your rate limit earlier, it is handled now."})
+        self.assertNotIn("stopped", json.loads(run(self.m, "board", "--json"))[0])
+
     def test_a_normal_stop_clears_it(self):
         run(self.m, "stop", stdin={"session_id": "u1", "hook_event_name": "Stop", "last_assistant_message": "Done."})
         r = json.loads(run(self.m, "board", "--json"))[0]

@@ -807,6 +807,10 @@ def cmd_stop():
     # StopFailure: the turn ended on an API error instead (rate_limit = the plan's usage limit, overloaded, ...).
     # The worker did not finish and will not go on by itself; the board has to say so.
     error = str(d.get("error") or "unknown")[:40] if d.get("hook_event_name") == "StopFailure" or d.get("error") else ""
+    # Seen live: a turn the plan limit ends can also arrive as a plain Stop whose "last message" is the
+    # limit notice ("You've hit your 5-hour limit · resets 7:10pm").
+    if not error and len(lines) == 1 and LIMIT_NOTICE.search(lines[0]):
+        error = "rate_limit"
     with board_lock():
         b = board_load()
         for t in b["tasks"]:
@@ -817,6 +821,9 @@ def cmd_stop():
                 else:
                     t.pop("stopped", None)
         board_save(b)
+
+
+LIMIT_NOTICE = re.compile(r"\b(hit|reached) your\b.{0,40}\blimit\b|\busage limit reached\b|\brate limit reached\b", re.I)
 
 
 def stopped_workers(error="rate_limit"):
@@ -1200,7 +1207,7 @@ def cmd_board():
             ago = round((time.time() - t.get("turnEnded", time.time())) / 60)
             print(f"         STOPPED {ago} min ago by an API error ({t['stopped']}): it did not finish. "
                   + ("Once the usage limit has reset, tell it to continue." if t["stopped"] == "rate_limit"
-                     else "Open it, or tell it to continue."))
+                     else "Open it, or tell it to continue.") + (f" ({t['last'][:100]})" if t.get("last") else ""))
         elif t.get("last") and t["status"] in ("running", "waiting"):
             ago = round((time.time() - t.get("turnEnded", time.time())) / 60)
             print(f"         its last turn ended {ago} min ago: {t['last'][:160]}"
@@ -1448,8 +1455,10 @@ def cmd_shot():
 
 
 if __name__ == "__main__":
-    # Windows pipes default to cp1252, which can't print ● ⚠ · and crashed the status line.
-    for _s in (sys.stdout, sys.stderr):
+    # Windows pipes default to cp1252, which can't print ● ⚠ · and crashed the status line. Reading is the
+    # same: Claude Code sends the hook's JSON as UTF-8, and read as cp1252 every non-ASCII character came
+    # out garbled (a "·" as "Â·", a folder or title with an accent as something else).
+    for _s in (sys.stdout, sys.stderr, sys.stdin):
         try:
             _s.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
