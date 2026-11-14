@@ -63,6 +63,23 @@ function claudeDir(root: string): string {
   return i >= 0 ? p.slice(0, i + '/.claude'.length) : p
 }
 
+/**
+ * ~/.claude for this computer. The Cairn hook's own path says where it is (…/.claude/cairn/cairn.py);
+ * only without that hook is it guessed from the mod's folder. A mod loaded in place from a checkout
+ * (a marketplace added as a local folder) does not live under ~/.claude at all: guessing from its
+ * folder put state/, the ledger and the config lookup inside the repo, where cairn.py never looks.
+ */
+let homeDir: string | undefined
+async function cairnHome($: EngineInterface): Promise<string> {
+  if (homeDir) return homeDir
+  try {
+    const script = (await cairnCommand($))?.[1]?.replace(/\\/g, '/')
+    const m = script?.match(/^(.+)\/[^/]+\/[^/]+$/)
+    if (m) return (homeDir = m[1]!)
+  } catch { /* settings unreadable: guess below, and ask again next time */ }
+  return claudeDir($.plugin.root)
+}
+
 /** Same rule as cairn.py's safe_id, so both name the same state file. */
 const safeId = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80) || 'unknown'
 
@@ -145,7 +162,7 @@ async function refreshWorkspace($: EngineInterface, force = false) {
     changed = key !== wsKey
     wsKey = key
     // Only Cairn Home speaks for the board; other open sessions stay quiet.
-    const speak = await inHome($, claudeDir($.plugin.root))
+    const speak = await inHome($, await cairnHome($))
     for (const t of speak ? w.board ?? [] : []) {
       const was = boardSeen.get(t.id)
       const asks = t.status === 'waiting' && t.waitingFor ? t.waitingFor : ''
@@ -363,7 +380,7 @@ async function logUsage($: EngineInterface, home: string, usd: number | undefine
 // ------------------------------------------------------------ savings ledger
 async function logEvent($: EngineInterface, ev: LedgerEvent) {
   try {
-    const file = `${claudeDir($.plugin.root)}/${LEDGER_FILE}`
+    const file = `${await cairnHome($)}/${LEDGER_FILE}`
     let prev: LedgerEvent[] = []
     try { prev = parseLedger(await $.fs.read(file)) } catch { /* first event */ }
     const next = addEvent(prev, ev)
@@ -380,7 +397,7 @@ async function warned($: EngineInterface, source: 'cold' | 'guard', tokens: numb
 
 // ------------------------------------------------------------ measuring
 async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'rateLimits' | 'cost'>) {
-  const home = claudeDir($.plugin.root)
+  const home = await cairnHome($)
   await loadCfg($, home)
   const p = u.context.percent
   const level = p === undefined ? 0 : p >= cfg.urgent ? 2 : p >= cfg.warn ? 1 : 0
@@ -473,7 +490,7 @@ async function decide($: EngineInterface) {
   const v = verdict(p, cfg.compact_mode, cfg, done, w.fails.length, snoozedTo)
   try {
     // The last decision, for anyone checking why Cairn did or didn't compact.
-    await $.fs.write(`${claudeDir($.plugin.root)}/cairn/state/compact-decision.json`, JSON.stringify({
+    await $.fs.write(`${await cairnHome($)}/cairn/state/compact-decision.json`, JSON.stringify({
       t: Date.now() / 1000, version: VERSION, pct: p, mode: cfg.compact_mode, done, openFails: w.fails.length,
       snoozedTo, act: v.act, reason: v.reason,
     }))
@@ -502,7 +519,7 @@ async function decide($: EngineInterface) {
 async function finishedWorker($: EngineInterface): Promise<boolean> {
   try {
     const sid = await $.session.id()
-    const b = JSON.parse(await $.fs.read(`${claudeDir($.plugin.root)}/cairn/board.json`)) as
+    const b = JSON.parse(await $.fs.read(`${await cairnHome($)}/cairn/board.json`)) as
       { tasks?: { cliSession?: string; status?: string }[] }
     const mine = (b.tasks ?? []).filter(t => t.cliSession === sid)
     return mine.length > 0 && mine.every(t => t.status === 'done' || t.status === 'closed')
@@ -668,11 +685,11 @@ export const register: Register = on => {
       $.ui.log(`cairn: cold-start check failed: ${String(err)}`)
     }
     try {
-      const evs = parseLedger(await $.fs.read(`${claudeDir($.plugin.root)}/${LEDGER_FILE}`))
+      const evs = parseLedger(await $.fs.read(`${await cairnHome($)}/${LEDGER_FILE}`))
       await update($, ledger, () => evs)
     } catch { /* no ledger yet */ }
     try {
-      const m = parseMeasured(await $.fs.read(`${claudeDir($.plugin.root)}/${MEASURED_FILE}`))
+      const m = parseMeasured(await $.fs.read(`${await cairnHome($)}/${MEASURED_FILE}`))
       await update($, measured, () => measuredLines(m))
     } catch {
       await update($, measured, () => measuredLines(null))
@@ -721,7 +738,7 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e)) // never in the way: replays or runs the call as normal
 
   on('session.compact', async ($, e, next) => {
-    const home = claudeDir($.plugin.root)
+    const home = await cairnHome($)
     await loadCfg($, home)
     const isSubagent = e.agentId !== undefined
     const msgs = e.messages ?? []
