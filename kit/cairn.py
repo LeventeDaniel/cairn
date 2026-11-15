@@ -3,7 +3,7 @@
 
 Subcommands (wired up by install.py):
   statusline     status line: shows context %, usage; saves exact numbers for the hooks
-  prompt         UserPromptSubmit hook: advises /clear, handoff, subagents, model choice
+  prompt         UserPromptSubmit hook: advises handoff, subagents, model choice (never asks the user to compact or clear)
   session-start  SessionStart hook: restores SESSION.md, delivers inbox notes, keeps repo registry
   stop           Stop / StopFailure hook: a worker's turn ended (or an API error such as the usage
                  limit cut it off); its own last line, or the error, goes on its board row
@@ -14,12 +14,14 @@ Subcommands (wired up by install.py):
   board          the task board, statuses refreshed from `claude agents`
   workspace      every registered repo: goal, live sessions, worktrees, notes waiting (--json)
   cleanup        list stale worktrees and old closed sessions (removes nothing)
+  stats          results: what Cairn's compactions saved and cost, tasks, limit hits, and a verdict; counted
+                 from transcripts, the ledger and the board, "not measured" where there is nothing to count (--json)
   shot           save a screenshot of the primary screen to ~/.claude/cairn/shots/latest.png
 
 Only standard-library Python. Works on macOS, Linux and Windows.
 """
 import json, os, re, shutil, subprocess, sys, tempfile, time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 HOME = Path.home() / ".claude"
@@ -161,7 +163,7 @@ def cmd_statusline():
     parts = [f"[{state['model'] or '?'}]"]
     if pct is not None:
         lvl = ctx_level(pct, state["window"], c)
-        flag = " ⚠ clear soon" if lvl == 2 else (" ●" if lvl == 1 else "")
+        flag = " ⚠ compacts soon" if lvl == 2 else (" ●" if lvl == 1 else "")
         parts.append(f"{pct:.0f}% ctx{flag}")
     if state["five_hour"] is not None:
         parts.append(f"5h {state['five_hour']:.0f}%")
@@ -328,19 +330,21 @@ def cmd_prompt():
     level = ctx_level(pct, window, c)
     pct_txt = f"{pct:.0f}%" + (f" ({pct * window / 100000:.0f}k tokens)" if window else "")
     notes = []
-    # With the cairn mod compacting at clean breaks, "/clear" advice would contradict it.
+    # The user is never asked to compact or clear. With the cairn mod it compacts at clean breaks; without
+    # it Claude Code's own auto-compact does (the installer sets it to 80%). Either way SESSION.md is what
+    # carries the task across, and the session-start hook reloads it afterwards.
     watcher = st.get("via") == "cairn" and watcher_mode() != "off"
     if watcher:
         if level == 2:
-            notes.append(f"Context is at {pct_txt}. cairn compacts at the end of this turn with Cairn's notes; "
-                         "if SESSION.md is stale, run the handoff skill first. No /clear needed.")
+            notes.append(f"Context is at {pct_txt}. Cairn compacts by itself at the end of this turn; if SESSION.md "
+                         "is stale, run the handoff skill first. Ask the user nothing about it.")
     elif level == 2:
-        notes.append(f"Context is at {pct_txt}. Do this now, before the user's request: run the "
-                     "handoff skill yourself to save state to SESSION.md, then tell the user in one line "
-                     "to type /clear (their state will reload automatically).")
+        notes.append(f"Context is at {pct_txt}. Before the user's request, run the handoff skill yourself so "
+                     "SESSION.md is current: Claude Code compacts by itself and the state reloads after it. "
+                     "Don't ask the user to compact or clear.")
     elif level == 1:
         notes.append(f"Context is at {pct_txt}. At the next natural stopping point, run the handoff "
-                     "skill yourself and suggest /clear in one line.")
+                     "skill yourself; no need to mention it.")
     cwd = d.get("cwd") or os.getcwd()
     home = is_home(cwd)
     title = (d.get("session_title") or "").strip()
@@ -355,8 +359,8 @@ def cmd_prompt():
                      f"the user in one line that {HOME_TITLE} will start it. Only if the user says to do it here, do it.")
     elif shift and pct >= c["shift_pct"]:
         notes.append(f"This message looks like a new task (no overlap with this session's goal: '{shift[:80]}'), "
-                     f"and context is {pct:.0f}% full. Route it per the Routing rules; if it belongs here, compact or "
-                     "hand off first so the old task's context doesn't ride along.")
+                     f"and context is {pct:.0f}% full. Route it per the Routing rules; if it belongs here, run the "
+                     "handoff skill first (the old task's context is dropped at the next compaction, which runs by itself).")
     if tools >= c["tool_results"]:
         notes.append(f"{tools} tool results are in context since the last reset. Send further searching, "
                      "file/log reading or research to the scout or researcher subagent.")
@@ -858,7 +862,10 @@ def claude_exe():
 def prune_state():
     """Per-session files (state/, marks/, nag/) older than prune_days go; they pile up otherwise."""
     cutoff = time.time() - cfg()["prune_days"] * 86400
-    keep = {"last.json", "compact-decision.json", "workspace.json"}
+    # Only per-session files go. The ledger, the benchmark results and the tallies are written rarely and
+    # were deleted with them once they were prune_days old.
+    keep = {"last.json", "compact-decision.json", "workspace.json", "ledger.json", "measured.json", "usage-days.json",
+            "stale.json", "stats-cache.json", "tally.json", "baseline.json"}
     for d in ("state", "marks", "nag"):
         if not (CAIRN / d).is_dir():
             continue
@@ -996,6 +1003,10 @@ def cmd_stop():
             if t.get("cliSession") == sid and t["status"] in ("running", "waiting"):
                 t["last"], t["turnEnded"], t["pending"] = last[:200], time.time(), 0 if error else pending
                 if error:
+                    if t.get("stopped") != error:  # for `stats`: each cut-off once, kept after the row is gone
+                        tl = tally_load(b["tasks"])
+                        tl["stops"][error] = tl["stops"].get(error, 0) + 1
+                        write_json(sfile("tally.json"), tl)
                     t["stopped"] = error
                 else:
                     t.pop("stopped", None)
@@ -1021,6 +1032,12 @@ def workspace():
     pdir = HOME / "projects"
     projects = [d for d in pdir.iterdir() if d.is_dir()] if pdir.is_dir() else []
     repos, claimed = [], set()
+    try:
+        # `claude -p` runs (benchmarks, Cairn's own /context reading) are not sessions anyone works in:
+        # the pane listed them as closed sessions of the repo they ran in.
+        headless = {sid for sid, f in all_facts(c["workspace_days"]).items() if f.get("headless")}
+    except Exception:
+        headless = set()
     for r in registry():
         enc = re.sub(r"[^A-Za-z0-9]", "-", r["path"]).lower()
         dirs = [d for d in projects if d.name.lower() == enc or d.name.lower().startswith(enc + "--claude-worktrees")]
@@ -1031,7 +1048,7 @@ def workspace():
                     m = f.stat().st_mtime
                 except OSError:
                     continue
-                if now - m < c["workspace_days"] * 86400:
+                if now - m < c["workspace_days"] * 86400 and f.stem not in headless:
                     files.append((m, f))
         files.sort(key=lambda x: -x[0])
         sessions = []
@@ -1370,6 +1387,17 @@ def cmd_report():
             t["session"] = a.session
             t.pop("cliSession", None)  # a new session: match it afresh
         if a.status:
+            tl, was, now = tally_load(b["tasks"]), t["status"], time.time()
+            if a.status == "done" and was != "done":
+                # for `stats`: how many tasks finished and how long each took, kept after the row leaves the board
+                t["doneAt"] = now
+                tl["done"] = tl.get("done", 0) + 1
+                tl["doneSecs"] = (tl["doneSecs"] + [round(now - t["started"])])[-300:]
+            elif was == "done" and a.status != "done":
+                t.pop("doneAt", None)
+                tl["done"] = max(0, tl.get("done", 0) - 1)
+                tl["doneSecs"] = tl["doneSecs"][:-1]
+            write_json(sfile("tally.json"), tl)
             t["status"] = a.status
             if a.status == "closed":
                 t["closedBy"] = "report"
@@ -1452,10 +1480,401 @@ def cmd_board():
                   + (f" ({t['pending']} background task(s) or wakeup(s) pending)" if t.get("pending") else ""))
 
 
+# ------------------------------------------------------------------ results (`stats`)
+# Proof, or the lack of it, that Cairn is worth running. Every number below is counted from what Claude Code
+# and Cairn already wrote down (transcripts, the mod's ledger, the board); nothing is modelled, and what
+# cannot be counted is reported as "not measured".
+def sfile(name):
+    return CAIRN / "state" / name
+
+
+FACTS_V = 2
+# Everything is weighed in cached reads, the price ratios of the prompt cache
+# (platform.claude.com/docs/en/build-with-claude/prompt-caching): a cached read costs 0.1x the input price,
+# an uncached read 1x, a cache write 1.25x (5-minute cache) or 2x (1-hour cache).
+UNCACHED, WRITE_5M, WRITE_1H = 10, 12.5, 20
+
+
+def ts_epoch(s):
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def kfmt(n):
+    n = float(n or 0)
+    a = abs(n)
+    return f"{n / 1e9:.1f}B" if a >= 1e9 else f"{n / 1e6:.1f}M" if a >= 1e6 else f"{round(n / 1000)}k" if a >= 1000 else f"{round(n)}"
+
+
+def tok_num(s):
+    """'15.3k' / '1m' / '724' → tokens."""
+    m = re.match(r"\s*([\d.]+)\s*([kKmM]?)", str(s))
+    if not m:
+        return 0
+    try:
+        return round(float(m.group(1)) * {"k": 1e3, "m": 1e6}.get(m.group(2).lower(), 1))
+    except ValueError:
+        return 0
+
+
+def median(xs):
+    xs = sorted(xs)
+    n = len(xs)
+    return 0 if not n else xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
+
+
+def session_facts(f):
+    """What one transcript shows, counted in one pass: replies and the context each one read, compactions
+    (size before, size of the first reply after, replies that followed, minutes the cache had been idle),
+    replies cut off by the usage limit. The format is internal to Claude Code: unknown lines are skipped."""
+    d = {"first": 0, "last": 0, "replies": 0, "read": 0, "out": 0, "peak": 0, "now": 0, "firstCtx": 0,
+         "comps": [], "limits": 0, "headless": False, "title": None, "cairnReplies": 0, "cairnRead": 0}
+    seen, origins, cur, last_reply, in_notice, cairn = set(), set(), None, 0.0, False, False
+    try:
+        h = open(f, encoding="utf-8", errors="replace")
+    except OSError:
+        return d
+    with h:
+        for line in h:
+            # Cairn's hooks sign what they add ("[Cairn ..."): replies from there on carry Cairn's own text
+            cairn = cairn or "[Cairn" in line
+            if not ('"assistant"' in line or "compact_boundary" in line or '"promptSource"' in line or '"custom-title"' in line):
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(e, dict) or e.get("isSidechain"):
+                continue
+            typ = e.get("type")
+            if typ == "custom-title":
+                d["title"] = e.get("customTitle") or d["title"]
+                continue
+            t = ts_epoch(e["timestamp"]) if e.get("timestamp") else 0.0
+            if typ == "user" and "promptSource" in e:
+                origins.add(e.get("turnOrigin") or "")
+            elif typ == "system" and e.get("subtype") == "compact_boundary":
+                meta = e.get("compactMetadata") if isinstance(e.get("compactMetadata"), dict) else {}
+                began = t - (meta.get("durationMs") or 0) / 1000 if t else 0
+                cur = {"t": t, "before": meta.get("preTokens") or d["now"], "after": None, "replies": 0, "w1h": 0, "w5m": 0,
+                       "gapMin": round((began - last_reply) / 60) if began and last_reply else None}
+                d["comps"].append(cur)
+            elif typ == "assistant":
+                msg = e.get("message") if isinstance(e.get("message"), dict) else {}
+                if e.get("isApiErrorMessage"):
+                    text = " ".join(str(b.get("text", "")) for b in msg.get("content") or [] if isinstance(b, dict))
+                    if LIMIT_NOTICE.search(text):
+                        d["limits"] += 0 if in_notice else 1  # the retries of one cut-off count once
+                        in_notice = True
+                    continue
+                u = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
+                ctx = sum(int(u.get(k) or 0) for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+                mid = msg.get("id")
+                if not ctx or mid in seen:  # one reply is written once per content block: count it once
+                    continue
+                seen.add(mid)
+                in_notice = False
+                d["replies"] += 1
+                d["read"] += ctx
+                d["out"] += int(u.get("output_tokens") or 0)
+                d["peak"], d["now"] = max(d["peak"], ctx), ctx
+                d["firstCtx"] = d["firstCtx"] or ctx
+                if cairn:
+                    d["cairnReplies"] += 1
+                    d["cairnRead"] += ctx
+                if cur is not None:
+                    if not cur["after"]:
+                        # the first reply after a compaction: what the context restarts at, and how much of it
+                        # had to be written to the cache again
+                        cur["after"] = ctx
+                        cc = u.get("cache_creation") if isinstance(u.get("cache_creation"), dict) else {}
+                        cur["w1h"] = int(cc.get("ephemeral_1h_input_tokens") or 0)
+                        cur["w5m"] = int(cc.get("ephemeral_5m_input_tokens") or 0) or (
+                            0 if cur["w1h"] else int(u.get("cache_creation_input_tokens") or 0))
+                    cur["replies"] += 1
+                last_reply = t or last_reply
+            else:
+                continue
+            if t:
+                d["first"], d["last"] = d["first"] or t, t
+    # `claude -p` runs (benchmarks, Cairn's own /context call) carry one prompt whose origin is "sdk"
+    d["headless"] = origins == {"sdk"}
+    return d
+
+
+def all_facts(days):
+    """session id → facts, for every transcript touched in the last `days`. A file is read again only when
+    its size or time changed."""
+    cache = read_json(sfile("stats-cache.json"), {})
+    if not isinstance(cache, dict) or cache.get("v") != FACTS_V or not isinstance(cache.get("files"), dict):
+        cache = {"v": FACTS_V, "files": {}}
+    files, now, out, dirty = cache["files"], time.time(), {}, False
+    pdir = HOME / "projects"
+    for f in (pdir.glob("*/*.jsonl") if pdir.is_dir() else []):
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        if now - st.st_mtime > days * 86400:
+            continue
+        c = files.get(str(f))
+        if not (isinstance(c, dict) and c.get("size") == st.st_size and c.get("mtime") == st.st_mtime
+                and isinstance(c.get("facts"), dict)):
+            c = {"size": st.st_size, "mtime": st.st_mtime, "facts": session_facts(f)}
+            files[str(f)] = c
+            dirty = True
+        out[f.stem] = dict(c["facts"], sid=f.stem, project=f.parent.name)
+    for gone in [p for p in files if not os.path.exists(p)]:
+        del files[gone]
+        dirty = True
+    if dirty:
+        try:
+            write_json(sfile("stats-cache.json"), cache)
+        except OSError:
+            pass
+    return out
+
+
+def tally_load(tasks=None):
+    """Counts that have to outlive the board (finished rows leave it after board_keep_days). Started once
+    from the rows on the board that day; `since` says from when the counts are complete."""
+    t = read_json(sfile("tally.json"))
+    if isinstance(t, dict) and isinstance(t.get("since"), (int, float)):
+        t.setdefault("stops", {})
+        t.setdefault("doneSecs", [])
+        return t
+    tasks = board_load()["tasks"] if tasks is None else tasks
+    return {"since": time.time(), "done": sum(1 for x in tasks if x.get("status") == "done"), "stops": {}, "doneSecs": []}
+
+
+def baseline_note(cwd):
+    """One reading of what a new session holds here (Claude Code's own /context count), kept with its date."""
+    _, cats = context_exact(cwd)
+    total = sum(tok_num(v) for _, v in cats)
+    if not total:
+        return None
+    log = [x for x in (read_json(sfile("baseline.json"), []) or []) if isinstance(x, dict)]
+    row = {"t": time.time(), "cwd": norm(str(cwd)), "total": total}
+    log.append(row)
+    write_json(sfile("baseline.json"), log[-200:])
+    return row
+
+
+def results(days=30, rows=None):
+    """Everything `stats` and the pane show. `rows`: board rows already refreshed, else the board as saved."""
+    now, ttl = time.time(), cache_ttl_min()
+    facts = all_facts(days)
+    real = [f for f in facts.values() if f["replies"] and not f["headless"]]
+    led = [e for e in (read_json(CAIRN / "state" / "ledger.json", []) or [])
+           if isinstance(e, dict) and e.get("kind") == "compaction" and isinstance(e.get("t"), (int, float))]
+
+    def by_cairn(sid, t):  # the mod's ledger says who started a compaction; the transcript cannot
+        return any(e.get("sid") == sid and e.get("by") == "cairn" and abs(e["t"] / 1000 - t) < 900 for e in led)
+
+    def group():
+        return {"n": 0, "removed": 0, "followed": 0, "avoided": 0, "own": 0, "rewritten": 0, "cost": 0, "wasted": 0,
+                "unfollowed": 0, "paid": 0, "lost": 0}
+
+    comp = {"cairn": group(), "other": group()}
+    per = []
+    for f in real:
+        mine = {"n": 0, "cairn": 0, "avoided": 0}
+        for c in f["comps"]:
+            cairn = by_cairn(f["sid"], c["t"])
+            g = comp["cairn" if cairn else "other"]
+            before = c.get("before") or 0
+            removed = max(0, before - c["after"]) if c.get("after") else 0
+            # A compaction on an expired cache that nobody came back to bought nothing and read the whole
+            # history uncached. One that a reply followed cost no more than a warm one: that reply would have
+            # read the same history uncached without it.
+            wasted = c.get("gapMin") is not None and c["gapMin"] >= ttl and not c.get("replies")
+            g["n"] += 1
+            g["removed"] += removed
+            g["followed"] += c.get("replies") or 0
+            g["avoided"] += removed * (c.get("replies") or 0)
+            g["own"] += before
+            g["rewritten"] += (c.get("w1h") or 0) + (c.get("w5m") or 0)
+            cost = round(before * (UNCACHED if wasted else 1)
+                         + (c.get("w1h") or 0) * (WRITE_1H - 1) + (c.get("w5m") or 0) * (WRITE_5M - 1))
+            g["cost"] += cost
+            g["paid" if removed * (c.get("replies") or 0) > cost else "lost"] += 1
+            g["wasted"] += 1 if wasted else 0
+            g["unfollowed"] += 0 if c.get("replies") else 1
+            mine["n"] += 1
+            mine["cairn"] += 1 if cairn else 0
+            mine["avoided"] += removed * (c.get("replies") or 0)
+        per.append({"sid": f["sid"], "title": f.get("title") or f["sid"][:8], "replies": f["replies"], "read": f["read"],
+                    "peak": f["peak"], "now": f["now"], "compactions": mine["n"], "byCairn": mine["cairn"],
+                    "avoided": mine["avoided"], "limits": f["limits"], "last": f["last"]})
+    per.sort(key=lambda x: -x["read"])
+    replies, read = sum(f["replies"] for f in real), sum(f["read"] for f in real)
+    with_cairn = {"replies": sum(f.get("cairnReplies", 0) for f in real), "read": sum(f.get("cairnRead", 0) for f in real)}
+
+    measured = read_json(CAIRN / "state" / "measured.json", {})
+    measured = measured if isinstance(measured, dict) else {}
+    bench = measured.get("bench") if isinstance(measured.get("bench"), dict) else None
+    per_session = None
+    try:
+        per_session = round(bench["on"]["cacheWrite"] - bench["off"]["cacheWrite"])
+    except (TypeError, KeyError):
+        pass
+    overhead = per_session * with_cairn["replies"] if per_session and per_session > 0 else None
+
+    recent = [f["firstCtx"] for f in real if f["firstCtx"] and now - f["first"] < 7 * 86400]
+    older = [f["firstCtx"] for f in real if f["firstCtx"] and now - f["first"] >= 7 * 86400]
+    base = [x for x in (read_json(sfile("baseline.json"), []) or []) if isinstance(x, dict) and x.get("total")]
+
+    b = board_load()
+    tasks = rows if rows is not None else b["tasks"]
+    tl = tally_load(b["tasks"])
+    count = lambda s: sum(1 for t in tasks if t.get("status") == s)
+    fin = [t for t in tasks if t.get("status") in ("done", "closed")]
+    board = {"routed": max(0, int(b.get("next", 1)) - 1), "finished": tl.get("done", 0), "running": count("running"),
+             "waiting": count("waiting"), "queued": count("queued"), "stoppedNow": sum(1 for t in tasks if t.get("stopped")),
+             "finishedOnBoard": len(fin), "stillOpen": sum(1 for t in fin if t.get("open")), "refreshed": rows is not None,
+             "since": tl["since"], "stops": sum(tl["stops"].values()), "doneSecs": tl["doneSecs"]}
+
+    c = comp["cairn"]
+    net = c["avoided"] - c["cost"] - (overhead or 0)
+    r = {"at": now, "days": days, "sessions": len(real), "headless": sum(1 for f in facts.values() if f["headless"]),
+         "replies": replies, "read": read, "withCairn": with_cairn, "compactions": comp, "perSessionOverhead": per_session, "overhead": overhead,
+         "net": net, "limits": {"hits": sum(f["limits"] for f in real), "sessions": sum(1 for f in real if f["limits"])},
+         "startup": {"readings": base[-1:] if len(base) < 2 else [base[0], base[-1]],
+                     "firstReply": {"recent": median(recent), "nRecent": len(recent), "before": median(older), "nBefore": len(older)}},
+         "board": board, "bench": bench, "scenario": measured.get("scenario") if isinstance(measured.get("scenario"), dict) else None,
+         "bySession": per}
+    r["verdict"] = results_verdict(r)
+    r["lines"] = results_lines(r)
+    return r
+
+
+def results_verdict(r):
+    c = r["compactions"]["cairn"]
+    short = ""
+    try:
+        p = (r["bench"]["on"]["usd"] - r["bench"]["off"]["usd"]) / r["bench"]["off"]["usd"] * 100
+        short = f" On short one-off tasks it only costs ({p:+.0f}% in the A/B)."
+    except (TypeError, KeyError, ZeroDivisionError):
+        pass
+    if not c["n"]:
+        return "NOT PROVEN: no compaction by Cairn is on record in this period, so only its overhead is." + short
+    cost = c["cost"] + (r["overhead"] or 0)
+    if not c["followed"]:
+        return (f"NOT PROVEN YET: no reply has followed Cairn's {c['n']} compaction(s), so nothing is saved yet; "
+                f"they cost {kfmt(cost)} token-reads." + short)
+    would = r["withCairn"]["read"] + c["avoided"]
+    share = r["net"] / would if would else 0
+    sums = f"avoided {kfmt(c['avoided'])} token-reads, cost {kfmt(cost)} with its own text"
+    if share >= 0.05:
+        return f"USEFUL: net {kfmt(r['net'])} token-reads saved, {share:.0%} of what the sessions with Cairn would have read ({sums})." + short
+    if r["net"] > 0:
+        return (f"ABOUT BREAK-EVEN: net {kfmt(r['net'])} token-reads saved, {share:.1%} of what the sessions with Cairn "
+                f"would have read ({sums})." + short)
+    return f"NOT USEFUL SO FAR: Cairn's compactions {sums}: a net loss of {kfmt(-r['net'])}." + short
+
+
+def results_lines(r):
+    day = lambda t: time.strftime("%Y-%m-%d", time.localtime(t))
+    c, o, b = r["compactions"]["cairn"], r["compactions"]["other"], r["board"]
+    out = [f"Last {r['days']} days: {r['sessions']} sessions, {r['replies']} replies, {kfmt(r['read'])} tokens read as context"
+           + (f" ({r['headless']} headless runs left out)" if r["headless"] else "")]
+    out.append(f"Compactions: {c['n'] + o['n']} ({c['n']} by Cairn, {o['n']} by the app or typed)"
+               + (f"; the others removed {kfmt(o['removed'])} tokens, {o['followed']} replies followed" if o["n"] else ""))
+    if c["n"]:
+        out.append(f"Cairn's {c['n']}: {kfmt(c['removed'])} tokens removed, {c['followed']} replies followed = "
+                   f"{kfmt(c['avoided'])} token-reads avoided; {c['paid']} paid for themselves, {c['lost']} did not"
+                   + (f" ({c['unfollowed']} had no reply after)" if c["unfollowed"] else ""))
+        out.append(f"Their cost: {kfmt(c['cost'])} token-reads (summaries read {kfmt(c['own'])} of history, the replies after "
+                   f"re-wrote {kfmt(c['rewritten'])} tokens of cache"
+                   + (f", {c['wasted']} ran on an expired cache with nobody coming back" if c["wasted"] else "") + ")")
+    out.append(f"Cairn's own text: {r['perSessionOverhead']} tokens (A/B), re-read by {r['withCairn']['replies']} replies = "
+               f"{kfmt(r['overhead'])} token-reads" if r["overhead"] else
+               "Cairn's own text per session: not measured (no A/B run on this computer)")
+    rd, fr = r["startup"]["readings"], r["startup"]["firstReply"]
+    if not rd:
+        out.append("New session size: not measured (run `cairn.py stats` in a terminal where the claude CLI answers)")
+    elif len(rd) == 1:
+        out.append(f"New session size (Claude Code's own count): {kfmt(rd[0]['total'])} tokens on {day(rd[0]['t'])}; "
+                   "first reading, nothing to compare yet")
+    else:
+        d = rd[1]["total"] - rd[0]["total"]
+        out.append(f"New session size (Claude Code's own count): {kfmt(rd[0]['total'])} on {day(rd[0]['t'])} → "
+                   f"{kfmt(rd[1]['total'])} on {day(rd[1]['t'])} ({'+' if d >= 0 else '-'}{kfmt(abs(d))})")
+    if fr["nRecent"]:
+        out.append(f"First reply of a session: median {kfmt(fr['recent'])} tokens in the last 7 days (n={fr['nRecent']})"
+                   + (f", {kfmt(fr['before'])} before (n={fr['nBefore']})" if fr["nBefore"] else ", nothing older to compare"))
+    secs = b["doneSecs"]
+    out.append(f"Tasks routed by Cairn Home: {b['routed']}, finished {b['finished']}; now {b['running']} running, "
+               f"{b['waiting']} waiting, {b['queued']} queued. Dispatch to done: "
+               + (f"median {round(median(secs) / 60)} min (n={len(secs)})" if secs
+                  else f"not measured yet (recorded for tasks finished after {day(b['since'])})"))
+    out.append((f"Finished workers closed: {b['finishedOnBoard'] - b['stillOpen']} of {b['finishedOnBoard']} on the board"
+                + (f" ({b['stillOpen']} still open)" if b["stillOpen"] else "") if b["refreshed"]
+                else "Finished workers closed: not measured in this view") + ". "
+               f"Usage-limit hits: {r['limits']['hits']} in {r['limits']['sessions']} session(s); workers stopped by an API "
+               f"error: {b['stops']} since {day(b['since'])}" + (f" ({b['stoppedNow']} stopped now)" if b["stoppedNow"] else ""))
+    bench, sc = r["bench"], r["scenario"]
+    try:
+        p = (bench["on"]["usd"] - bench["off"]["usd"]) / bench["off"]["usd"] * 100
+        out.append(f"A/B, short one-off tasks ({bench.get('model', '?')}, n={bench.get('runs', '?')} per arm): "
+                   f"${bench['off']['usd']:.4f} without Cairn, ${bench['on']['usd']:.4f} with ({p:+.0f}%)")
+    except (TypeError, KeyError, ZeroDivisionError):
+        out.append("A/B benchmark: not measured on this computer (bench/run.py in the repo)")
+    try:
+        p = (sc["stages"] - sc["oneSession"]) / sc["oneSession"] * 100
+        out.append(f"A/B, {sc.get('stageCount', '?')}-stage project ({sc.get('model', '?')}, n={sc.get('runs', '?')}): "
+                   f"${sc['oneSession']:.3f} as one long session, ${sc['stages']:.3f} as hand-off stages ({p:+.0f}%)")
+    except (TypeError, KeyError, ZeroDivisionError):
+        pass
+    return out
+
+
+def cmd_stats():
+    import argparse
+    ap = argparse.ArgumentParser(prog="cairn.py stats")
+    ap.add_argument("--days", type=int, default=30, help="sessions touched in the last N days (default 30)")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--no-measure", action="store_true", help="don't take a new-session size reading")
+    a = ap.parse_args(sys.argv[2:])
+    if not a.no_measure:
+        # At most one reading a day: `claude -p /context` is free (no model call) but takes about 5 s.
+        log = [x for x in (read_json(sfile("baseline.json"), []) or []) if isinstance(x, dict)]
+        if not log or time.time() - log[-1].get("t", 0) > 20 * 3600:
+            try:
+                baseline_note(HOME_DIR if HOME_DIR.is_dir() else Path.home())
+            except Exception:
+                pass
+    r = results(max(1, a.days), board_rows())
+    if a.json:
+        print(json.dumps(r, ensure_ascii=False))
+        return
+    print("Cairn results (counted from transcripts, the mod's ledger and the board; nothing estimated)\n")
+    print("VERDICT  " + r["verdict"] + "\n")
+    for line in r["lines"]:
+        print("  " + line)
+    if r["bySession"]:
+        print(f"\nPer session (largest first){'':16} replies    read    peak     now  compactions  avoided  limit hits")
+        for s in r["bySession"][:12]:
+            comps = f"{s['compactions']} ({s['byCairn']} Cairn)" if s["compactions"] else "-"
+            print(f"  {str(s['title'])[:40]:40} {s['replies']:7} {kfmt(s['read']):>7} {kfmt(s['peak']):>7} {kfmt(s['now']):>7}"
+                  f"  {comps:>11} {kfmt(s['avoided']) if s['avoided'] else '-':>8} {s['limits'] or '-':>11}")
+    print("\nA token-read is one token of context read by one reply (every reply re-reads the whole context). Avoided = "
+          "tokens a compaction removed x replies that really followed it. Cost = the history each summary read "
+          f"(x{UNCACHED} when the prompt cache had expired and nobody came back), the cache the next reply had to write again "
+          f"(a write costs {WRITE_5M:g}-{WRITE_1H:g} cached reads), and Cairn's own text in every reply.")
+
+
 def cmd_workspace():
     w = workspace()
     w["board"] = board_rows()
     w["stale"] = stale_cached()
+    try:
+        r = results(30, w["board"])
+        w["results"] = {"verdict": r["verdict"], "short": re.split(r" \(|\. ", r["verdict"])[0], "lines": r["lines"]}
+    except Exception:
+        hook_failed("workspace")  # the pane's list must not depend on the results
     write_json(CAIRN / "state" / "workspace.json", w)
     if "--json" in sys.argv:
         print(json.dumps(w, ensure_ascii=False))
@@ -1715,7 +2134,7 @@ def run_command(cmd):
     fn = {"statusline": cmd_statusline, "prompt": cmd_prompt,
           "session-start": cmd_session_start, "stop": cmd_stop, "audit": cmd_audit, "spawn": cmd_spawn, "new-repo": cmd_new_repo,
           "workspace": cmd_workspace, "shot": cmd_shot, "cleanup": cmd_cleanup,
-          "dispatch": cmd_dispatch, "report": cmd_report, "board": cmd_board}.get(cmd, lambda: print(__doc__))
+          "dispatch": cmd_dispatch, "report": cmd_report, "board": cmd_board, "stats": cmd_stats}.get(cmd, lambda: print(__doc__))
     try:
         fn()
     except Exception:
@@ -1737,6 +2156,6 @@ if __name__ == "__main__":
             pass
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd and cmd not in ("statusline", "prompt", "session-start", "stop", "audit", "spawn", "workspace", "shot",
-                           "cleanup", "dispatch", "report", "board", "new-repo"):
+                           "cleanup", "dispatch", "report", "board", "new-repo", "stats"):
         print(f"Unknown command '{cmd}'.\n"); print(__doc__); sys.exit(2)
     run_command(cmd)

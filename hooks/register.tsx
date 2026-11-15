@@ -2,20 +2,20 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage, SessionUsage } from 'claude-code'
 
 import type { Compaction, Offer, Snap, Work, Workspace } from '../types'
-import { LEDGER_DEFAULTS, FILE as LEDGER_FILE, MEASURED_FILE, addEvent, measuredLines, parseLedger, parseMeasured, summaryLines } from './ledger'
+import { LEDGER_DEFAULTS, FILE as LEDGER_FILE, MEASURED_FILE, addEvent, measuredLines, parseLedger, parseMeasured } from './ledger'
 import type { LedgerEvent } from './ledger'
 import { advice, health, needsAndRunning } from './panel'
 import type { Item } from './panel'
 
-const VERSION = '0.8.1'
+const VERSION = '0.9.0'
 const PANE = 'cairn'
 const TITLE = 'Cairn'
 // Tunable in ~/.claude/cairn/config.json, next to Cairn's own keys.
 const DEFAULTS = {
   warn: 50, urgent: 70, usage_warn: 80,
-  // smart: Cairn decides (clean breaks, idle time, hard limit); ask: offer only;
-  // auto: compact at compact_at whatever the state; off: never
-  compact_mode: 'smart' as 'smart' | 'ask' | 'auto' | 'off',
+  // smart: Cairn decides and acts by itself (clean breaks, idle time, hard limit), it never asks;
+  // auto: compact at compact_at whatever the state; off: never. ("ask" from older configs = smart.)
+  compact_mode: 'smart' as 'smart' | 'auto' | 'off',
   compact_soft: 40,    // % from which a finished task is a reason to compact
   compact_at: 60,      // % from which any calm turn end is
   compact_hard: 72,    // % at which Cairn compacts at the next turn end, mid-task or not
@@ -33,9 +33,9 @@ const DEFAULTS = {
   // new cache write each time. 0 = steps as configured.
   compact_min_gain_tokens: 60000,
   // From this % of the 5-hour or weekly limit Cairn starts no compaction by itself: at the limit it can
-  // only fail (seen live), and just under it, it spends what is left. "Compact now" still works.
+  // only fail (seen live), and just under it, it spends what is left. `/cairn compact` still works.
   usage_stop: 95,
-  idle_minutes: 3,     // an offer nobody answered runs after this long with no new prompt
+  idle_minutes: 3,     // a compaction Cairn planned at a clean break runs after this long with no new prompt
   trim_over: 4000,     // tool results longer than this (chars) are trimmed before summarizing
   trim_keep: 800,      // chars kept from a trimmed result (head + tail)
   // The prompt cache keeps a context cheap to re-read for this long after the last
@@ -114,7 +114,8 @@ let compacting = false
 // This main-loop turn's signs that a piece of work just finished.
 let turnDone = ''      // what finished, '' if nothing
 let turnSeq = 0        // main-loop turns started; an idle timer checks nothing new began
-let snoozedTo = 0      // "Not now": no new offer below this %
+let coldTokens = 0     // this session started with its prompt cache expired and this much in context
+let why = ''           // why the queued compaction runs, for the one line Cairn says about it
 let cairnRun = false   // a compaction Cairn queued is running (the app's own are not)
 let coldRun = false    // ...and it ran while the cache was still warm, just before it expired (the guard)
 let compactions = 0    // main-loop compactions done; a cache timer checks none ran since
@@ -143,6 +144,8 @@ async function loadCfg($: EngineInterface, home: string) {
   } catch {
     cfg = { ...DEFAULTS, ...ttl }
   }
+  // Cairn no longer asks ("Compact now" / "Not now"): a config that still says ask gets smart.
+  if ((cfg.compact_mode as string) === 'ask') cfg = { ...cfg, compact_mode: 'smart' }
   if (await inHome($, home)) {
     cfg = {
       ...cfg, compact_soft: cfg.home_compact_soft, compact_at: cfg.home_compact_at, compact_hard: cfg.home_compact_hard,
@@ -491,7 +494,7 @@ async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'ra
   await update($, snap, () => s)
 
   const parts: string[] = []
-  if (p !== undefined) parts.push(`${p.toFixed(0)}% ctx${level === 2 ? ' ⚠ clear soon' : level === 1 ? ' ●' : ''}`)
+  if (p !== undefined) parts.push(`${p.toFixed(0)}% ctx${level === 2 ? (cfg.compact_mode === 'off' ? ' ⚠ clear soon' : ' ⚠ compacts soon') : level === 1 ? ' ●' : ''}`)
   const fh = pct(s.limits, 'five_hour'), sd = pct(s.limits, 'seven_day')
   if (fh !== undefined) parts.push(`5h ${fh.toFixed(0)}%`)
   if (sd !== undefined) parts.push(`7d ${sd.toFixed(0)}%`)
@@ -528,30 +531,30 @@ async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'ra
 
 // ------------------------------------------------------------ when to compact (5)
 /**
- * Called at each main-loop turn end. Picks one of: compact now, offer (band
- * above the prompt, and compact if the person stays away idle_minutes), or wait.
+ * Called at each main-loop turn end. Cairn decides by itself and never asks. Picks one of: compact now,
+ * compact once the person has stayed away idle_minutes ("away"), or wait.
  *
  * - at compact_hard: now, so the engine's own auto-compact never cuts in mid-task
  * - an open failure below compact_hard: wait, the debugging context is still needed
  *   (finished work clears open failures first, see decide())
- * - from compact_at: a finished piece of work → now; any other calm end → offer
- * - from compact_soft: a finished piece of work → offer
+ * - from compact_at: a finished piece of work → now; any other calm end → away
+ * - from compact_soft: a finished piece of work → away
+ *
+ * "away" instead of "now" where the person may be about to type the next thing: a compaction holds the
+ * session for its duration, and a prompt sent within idle_minutes means the context is still in use.
  */
-function verdict(p: number, mode: Cfg['compact_mode'], c: Cfg, done: string, openFails: number,
-  snoozed: number): { act: 'now' | 'offer' | 'wait'; reason: string } {
+function verdict(p: number, mode: Cfg['compact_mode'], c: Cfg, done: string, openFails: number):
+  { act: 'now' | 'away' | 'wait'; reason: string } {
   const wait = { act: 'wait' as const, reason: '' }
   if (mode === 'off' || p < c.compact_soft) return wait
   if (mode === 'auto') return p >= c.compact_at ? { act: 'now', reason: `context past ${c.compact_at.toFixed(0)}%` } : wait
-  if (p >= c.compact_hard) {
-    return mode === 'ask' ? { act: 'offer', reason: `context ${p.toFixed(0)}%, near the limit` }
-      : { act: 'now', reason: `context ${p.toFixed(0)}%, before auto-compact cuts in mid-task` }
-  }
-  if (openFails > 0 || p < snoozed) return wait
+  if (p >= c.compact_hard) return { act: 'now', reason: `context ${p.toFixed(0)}%, before auto-compact cuts in mid-task` }
+  if (openFails > 0) return wait
   if (p >= c.compact_at) {
-    if (done && mode === 'smart') return { act: 'now', reason: `${done}, context ${p.toFixed(0)}%` }
-    return { act: 'offer', reason: done ? `${done}, context ${p.toFixed(0)}%` : `context ${p.toFixed(0)}%, a calm point` }
+    if (done) return { act: 'now', reason: `${done}, context ${p.toFixed(0)}%` }
+    return { act: 'away', reason: `context ${p.toFixed(0)}%, a calm point` }
   }
-  return done ? { act: 'offer', reason: `${done}, context ${p.toFixed(0)}%` } : wait
+  return done ? { act: 'away', reason: `${done}, context ${p.toFixed(0)}%` } : wait
 }
 
 async function decide($: EngineInterface) {
@@ -563,10 +566,10 @@ async function decide($: EngineInterface) {
   if (p === undefined) return
   const eff = steps(cfg, now0.window, floorTokens)
   // Finished work closes the failures left from earlier: a command that failed
-  // once (a stray ls, a probe) must not hold back every later offer.
+  // once (a stray ls, a probe) must not hold back every later compaction.
   if (done) await update($, work, x => ({ ...x, fails: [] }))
   const w = await read($, work)
-  let v = verdict(p, cfg.compact_mode, eff, done, w.fails.length, snoozedTo)
+  let v = verdict(p, cfg.compact_mode, eff, done, w.fails.length)
   if (v.act !== 'wait' && planSpent(now0)) {
     v = { act: 'wait', reason: `plan usage at ${cfg.usage_stop}% or more: no compaction until it resets (${v.reason})` }
   }
@@ -574,29 +577,29 @@ async function decide($: EngineInterface) {
     // The last decision, for anyone checking why Cairn did or didn't compact.
     await $.fs.write(`${await cairnHome($)}/cairn/state/compact-decision.json`, JSON.stringify({
       t: Date.now() / 1000, version: VERSION, pct: p, mode: cfg.compact_mode, done, openFails: w.fails.length,
-      snoozedTo, act: v.act, reason: v.reason, floor: floorTokens,
+      act: v.act, reason: v.reason, floor: floorTokens,
     }))
   } catch { /* the log is optional */ }
-  if (v.act === 'wait') return
-  if (v.act === 'now') {
-    await update($, offer, () => null)
-    $.ui.toast(`Cairn is compacting: ${v.reason}`)
-    queueCompact($)
+  if (v.act === 'wait') {
+    await update($, offer, o => (o?.done ? o : null))
     return
   }
+  if (v.act === 'now') {
+    await update($, offer, () => null)
+    queueCompact($, v.reason)
+    return
+  }
+  // No question, no band: the plan is one line in the pane, and it runs if no turn starts in the meantime.
   const at = await $.clock.now()
   await update($, offer, () => ({ percent: p, reason: v.reason, at }))
-  if (cfg.compact_mode === 'smart') {
-    // Nobody answers and no turn starts: compact while the person is away.
-    const seq = turnSeq
-    $.clock.after(cfg.idle_minutes * 60000, () => { void idleCompact($, seq) })
-  }
+  const seq = turnSeq
+  $.clock.after(cfg.idle_minutes * 60000, () => { void idleCompact($, seq) })
 }
 
 /**
  * A worker Cairn Home started whose board task is done or closed. Nobody is going to send it another
  * message, so compacting it while it sits idle buys nothing and spends plan usage (with many finished
- * workers open, a compaction each). The offer stays up for the person who does come back to it.
+ * workers open, a compaction each). Home archives it instead.
  */
 async function finishedWorker($: EngineInterface): Promise<boolean> {
   try {
@@ -611,12 +614,12 @@ async function finishedWorker($: EngineInterface): Promise<boolean> {
 }
 
 async function idleCompact($: EngineInterface, seq: number) {
-  if (seq !== turnSeq || pending || compacting || !(await read($, offer))) return
-  if (await finishedWorker($)) return
-  if (planSpent(await read($, snap))) return // the offer stays up; the person can still press it
+  const o = await read($, offer)
+  if (seq !== turnSeq || pending || compacting || !o || o.done) return
   await update($, offer, () => null)
-  $.ui.toast("Cairn compacted while you were away: see the Cairn pane")
-  queueCompact($)
+  if (await finishedWorker($)) return
+  if (planSpent(await read($, snap))) return
+  queueCompact($, `${o.reason}, you were away ${cfg.idle_minutes} min`)
 }
 
 // ------------------------------------------------------------ prompt cache (8)
@@ -638,8 +641,7 @@ function armCacheGuard($: EngineInterface) {
 async function cacheGuard($: EngineInterface, seq: number, done: number) {
   if (seq !== turnSeq || done !== compactions || pending || compacting || !cacheOn()) return
   const now0 = await read($, snap)
-  const { tokens = 0, percent = 0 } = now0
-  if (percent < snoozedTo) return // "Not now" stands
+  const { tokens = 0 } = now0
   if (tokens < cfg.cache_min_tokens) return
   // Under the floor plus the least worthwhile gain there is next to nothing to remove: the cold re-read
   // costs about the same with or without the compaction, and the compaction is paid on top.
@@ -649,8 +651,7 @@ async function cacheGuard($: EngineInterface, seq: number, done: number) {
   await update($, offer, () => null)
   await warned($, 'guard', tokens)
   coldRun = true
-  $.ui.toast(`Cairn compacted before the prompt cache expired: ${k(tokens)} tokens would have been re-read at full price`)
-  queueCompact($)
+  queueCompact($, `before the prompt cache expired, ${k(tokens)} tokens would have been re-read at full price`)
 }
 
 type Ends = Record<string, { at: number; tokens: number }>
@@ -672,10 +673,18 @@ async function noteEnd($: EngineInterface) {
 }
 
 /**
- * At session start: a session coming back after its prompt cache expired, with
- * a big context, gets an offer (the band) to compact before the first reply re-reads it all.
+ * At session start: a session coming back after its prompt cache expired, with a big context.
+ * Cairn does nothing here and asks nothing. The whole history is read once at full price whatever happens
+ * next: by the first reply, or by the request that summarizes it (code.claude.com/docs/en/prompt-caching,
+ * "Compacting the conversation"). Compacting first would save about a tenth of that one read and give the
+ * first answer a summary instead of the context; and a session start is not the person coming back: after
+ * an app restart every open session starts at once (seen live 2026-11-14: the restart compacted the big
+ * sessions together, one of 407k tokens, and took a quarter of the 5-hour limit in seconds). So the first
+ * reply runs on the full context, and the turn end after it is an ordinary one: decide() compacts there,
+ * from a warm cache, if the size calls for it.
  */
 async function coldCheck($: EngineInterface) {
+  coldTokens = 0
   if (cfg.compact_mode === 'off') return
   const ends = ((await $.store.get('lastEnd')) ?? {}) as Ends
   const last = ends[await $.session.id()]
@@ -683,42 +692,24 @@ async function coldCheck($: EngineInterface) {
   const now = await $.clock.now()
   const idle = (now - last.at) / 60000
   if (idle < cfg.cache_ttl_minutes) return
-  const away = idle >= 120 ? `${Math.round(idle / 60)} h` : `${Math.round(idle)} min`
   const percent = (await read($, snap)).percent ?? 0
   if (await finishedWorker($)) {
-    // Its task is done: the cheapest next step is none. Seen live 2026-11-15: the band offered to compact
-    // a finished 195k-token worker, it was pressed, and the whole history was read uncached for nothing.
+    // Its task is done: the cheapest next step is none. Seen live 2026-11-15: a finished 195k-token worker
+    // was compacted at restart and the whole history was read uncached for nothing. One line in the pane.
     await update($, offer, () => ({
       percent, at: now, cold: true, done: true,
       reason: `this session's task is finished: archive it instead of continuing here (a reply would re-read ${k(last.tokens)} tokens at full price)`,
     }))
     return
   }
-  // Nothing worth removing: compacting would pay for a summary and still restart at about the same size.
-  if (floorTokens > 0 && last.tokens < floorTokens + cfg.compact_min_gain_tokens) return
-  await warned($, 'cold', last.tokens)
-  await update($, offer, () => ({
-    percent, at: now, cold: true,
-    reason: `away ${away}, the prompt cache expired: ${k(last.tokens)} tokens are re-read at full price once either way, compacting first makes the replies after that cheaper`,
-  }))
-  // Offer only, never by itself. With the cache already expired the summarizing request reads the whole
-  // history uncached (code.claude.com/docs/en/prompt-caching, "Compacting the conversation"), so this
-  // compaction is the most expensive kind, and a session start is not the person coming back: after an
-  // app restart every open session starts at once. Seen live 2026-11-14: the restart compacted the big
-  // sessions together (one of 407k tokens) and took a quarter of the 5-hour limit in seconds. The band
-  // waits for whoever actually returns to this session.
+  coldTokens = last.tokens // logged as a cold re-read if a turn really starts here
 }
 
-async function snooze($: EngineInterface) {
-  const o = await read($, offer)
-  snoozedTo = (o?.percent ?? 0) + 10
-  await update($, offer, () => null)
-}
-
-async function acceptOffer($: EngineInterface) {
+/** `/cairn compact`: the person asked. */
+async function compactNow($: EngineInterface) {
   await update($, offer, () => null)
   tries = 0
-  queueCompact($)
+  queueCompact($, 'you asked')
 }
 
 // The engine refuses a compaction under a turn a hook is holding (a command,
@@ -728,7 +719,8 @@ const RETRY_MS = [400, 1500, 4000]
 let pending = false
 let tries = 0
 
-function queueCompact($: EngineInterface) {
+function queueCompact($: EngineInterface, reason?: string) {
+  if (reason !== undefined) why = reason
   pending = true
   if (compacting) return
   const delay = RETRY_MS[Math.min(tries, RETRY_MS.length - 1)]!
@@ -747,12 +739,15 @@ async function runCompact($: EngineInterface) {
     pending = false
     tries = 0
     compactions++
-    $.ui.toast("Compacted with Cairn's notes: see the Cairn pane")
+    // The one line Cairn says about a compaction: after it, never a question before it.
+    $.ui.toast(why ? `Cairn compacted this chat: ${why}` : 'Cairn compacted this chat')
+    why = ''
   } catch (err) {
     tries++
     if (tries > 6) {
       pending = false
       tries = 0
+      why = ''
       $.ui.toast("Cairn couldn't compact; try /compact instead")
       $.ui.log(`cairn: compaction gave up: ${String(err)}`)
     }
@@ -818,7 +813,20 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) { turnSeq++; turnDone = ''; if (floorDue === 1) floorDue = 2 }
+    if (e.agentId === undefined) {
+      turnSeq++; turnDone = ''; if (floorDue === 1) floorDue = 2
+      try {
+        // The person is here: a compaction planned for "while you are away" is off, and so is any note.
+        await update($, offer, () => null)
+        if (coldTokens) {
+          const t = coldTokens
+          coldTokens = 0
+          await warned($, 'cold', t) // this reply re-reads the whole context at full price: on record
+        }
+      } catch (err) {
+        $.ui.log(`cairn: turn start: ${String(err)}`)
+      }
+    }
     return next(e)
   })
 
@@ -899,45 +907,20 @@ export const register: Register = on => {
       floorDue = 1
       floorBelow = res.tokensBefore ?? 0
     }
-    if (!isSubagent) { snoozedTo = 0; compactions++; await update($, offer, () => null) }
+    if (!isSubagent) { compactions++; await update($, offer, () => null) }
     return messages === res.messages ? res : { ...res, messages }
   }).catch(($, e, next) => next(e)) // on any failure, the engine's own compaction stands
 
   on('command.run', { command: 'cairn' }, async ($, e) => {
     if (e.args.trim() === 'compact') {
       if (pending || compacting) return { text: 'A Cairn compaction is already queued.' }
-      await acceptOffer($)
+      await compactNow($)
       return { text: "Compaction queued: it runs with Cairn's notes as soon as this command finishes." }
     }
     await refresh($, await $.session.usage())
     await refreshWorkspace($, true)
     const opened = await $.ui.open({ id: PANE, title: TITLE })
     return { text: opened.isPlaced ? 'Cairn pane opened.' : `Cairn pane is waiting: ${opened.reason}` }
-  })
-
-  // ---------------------------------------------------------- band (5)
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const o = await read($, offer)
-    if (!o || e.props.hasSurvey || e.props.isWorking || pending || compacting) return next(e)
-    const { Box, Button, Text } = $.ui.resolve(e)
-    const idle = cfg.compact_mode === 'smart' && !o.cold ? ` · runs by itself in ${cfg.idle_minutes} min if you're away` : ''
-    if (o.done) {
-      return (
-        <Box>
-          <Text>Cairn: {o.reason} </Text>
-          <Button key="later" label="OK" onPress={() => snooze($)} />
-        </Box>
-      )
-    }
-    const say = o.cold ? `Cairn: compact before you continue (${o.reason})` : `Cairn: good moment to compact (${o.reason})`
-    return (
-      <Box>
-        <Text>{say}{idle} </Text>
-        <Button key="now" label="Compact now" onPress={() => acceptOffer($)} />
-        <Text> </Text>
-        <Button key="later" label="Not now" onPress={() => snooze($)} />
-      </Box>
-    )
   })
 
   // ---------------------------------------------------------- pane (7)
@@ -950,7 +933,6 @@ export const register: Register = on => {
     const o = await read($, offer)
     const w2 = await read($, ws)
     const dd = await read($, days)
-    const led = await read($, ledger)
     const meas = await read($, measured)
     const open = await read($, details)
     const now = await $.clock.now()
@@ -961,8 +943,9 @@ export const register: Register = on => {
     const fh = pct(s.limits, 'five_hour'), sd = pct(s.limits, 'seven_day')
     const usageHigh = (fh ?? 0) >= cfg.usage_warn || (sd ?? 0) >= cfg.usage_warn
     const { needs, running } = needsAndRunning(w2, s.inbox)
-    const hl = health(s, led, now, cfg.usage_warn, { ...cfg, ledger_floor: floorTokens })
-    const tip = advice(hl, s)
+    const hl = health(s, cfg.usage_warn)
+    const res = w2?.results
+    const tip = advice(hl, s, cfg.compact_mode !== 'off')
     const row = (it: Item, mark: string, hot: boolean) => (
       <Box flexDirection="column">
         <Text color={hot ? 'yellow' : undefined}>{mark} {it.text}</Text>
@@ -983,8 +966,11 @@ export const register: Register = on => {
         {fh === undefined
           ? <Text dimColor>No usage reading yet.</Text>
           : <Text color={hl.level === 'high' ? 'yellow' : undefined}>{'█'.repeat(barN)}{'░'.repeat(barW - barN)} {fh.toFixed(0)}% of your 5-hour limit used</Text>}
-        {hl.saved && <Text dimColor>{hl.saved}</Text>}
+        {res && <Text dimColor>Cairn so far: {res.short ?? res.verdict}</Text>}
         {tip && <Text color="yellow">{tip}</Text>}
+        {o && (o.done
+          ? <Text color="yellow">Cairn: {o.reason}</Text>
+          : <Text dimColor>Cairn compacts this chat if you stay away {cfg.idle_minutes} min ({o.reason}). Nothing to do.</Text>)}
         <Text> </Text>
         <Button key="details" label={open ? '▾ Hide details' : '▸ Details'} onPress={() => update($, details, v => !v)} />
         {open && (
@@ -1013,11 +999,11 @@ export const register: Register = on => {
             </Text>
           ))}
           <Text> </Text>
-          <Text bold>Savings</Text>
-          {summaryLines(led, dd, now, { ...cfg, ledger_floor: floorTokens }).map((l, i) => (
-            <Text dimColor={i > 0 && l.startsWith('Estimate')}>{l}</Text>
-          ))}
-          {meas.map((l, i) => (
+          <Text bold>Results (counted, nothing estimated)</Text>
+          {res
+            ? [res.verdict, ...res.lines].map((l, i) => <Text color={i === 0 ? 'cyan' : undefined} dimColor={i > 0}>{l}</Text>)
+            : <Text dimColor>Not counted yet: they come from `cairn.py stats` (the Cairn kit, current version).</Text>}
+          {!res && meas.map((l, i) => (
             <Text color={i === 0 ? 'cyan' : undefined} dimColor={i > 0}>{l}</Text>
           ))}
           <Text> </Text>

@@ -1,6 +1,4 @@
 import type { BoardTask, Snap, Workspace } from '../types'
-import { summarize } from './ledger'
-import type { LedgerCfg, LedgerEvent } from './ledger'
 
 /** One line of the default view. `href` opens that session when the app knows its id. */
 export type Item = { text: string; hint?: string; href?: string }
@@ -11,8 +9,6 @@ export type Health = {
   sevenDay?: number
   /** 'ok' | 'high' (>= usage_warn) */
   level: 'ok' | 'high'
-  /** "Cairn saved about $N this week (estimate)", only with real ledger data */
-  saved?: string
 }
 
 const clip = (s: string, n: number) => {
@@ -75,21 +71,21 @@ export function needsAndRunning(w: Workspace | null, inbox: readonly string[]): 
   return { needs, running }
 }
 
-/** Plan use plus a savings line that appears only when the ledger recorded real Cairn compactions. */
-export function health(s: Snap, events: readonly LedgerEvent[], now: number, usageWarn: number, c?: LedgerCfg): Health {
+/**
+ * Plan use. What Cairn saved or cost is not worked out here any more: an estimate in dollars is not a
+ * result. The pane shows what `cairn.py stats` counted (Workspace.results).
+ */
+export function health(s: Snap, usageWarn: number): Health {
   const lim = (kind: string) => s.limits.find(l => l.kind === kind)?.percentUsed
   const fh = lim('five_hour'), sd = lim('seven_day')
-  const sum = summarize(events, now, c)
-  const saved = sum.byCairn > 0 && sum.usdSaved >= 0.01
-    ? `Cairn saved about $${sum.usdSaved < 10 ? sum.usdSaved.toFixed(2) : Math.round(sum.usdSaved)} this week (estimate)`
-    : undefined
-  return { fiveHour: fh, sevenDay: sd, level: (fh ?? 0) >= usageWarn || (sd ?? 0) >= usageWarn ? 'high' : 'ok', saved }
+  return { fiveHour: fh, sevenDay: sd, level: (fh ?? 0) >= usageWarn || (sd ?? 0) >= usageWarn ? 'high' : 'ok' }
 }
 
 /** At most one short sentence, and only when the person should act. */
-export function advice(h: Health, s: Snap): string | undefined {
+export function advice(h: Health, s: Snap, compacts = false): string | undefined {
   if ((h.fiveHour ?? 0) >= 95) return 'Your 5-hour limit is almost used: pause big jobs until it resets.'
   if (h.level === 'high') return 'Plan use is high: keep new work small.'
-  if (s.level === 2) return 'This chat is getting very long: start a fresh one soon.'
+  // With compaction on there is nothing for the person to do: Cairn compacts at the turn's end by itself.
+  if (s.level === 2 && !compacts) return 'This chat is getting very long: start a fresh one soon.'
   return undefined
 }

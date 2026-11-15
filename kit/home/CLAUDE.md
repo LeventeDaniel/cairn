@@ -26,6 +26,7 @@ say so in one line with its session link; the pane's Board section also lists "w
 
 ## Answer yourself only
 - Status ("what's running?", "what waits on me?"): run `cairn.py board`, answer in a few lines.
+- "Is Cairn worth it?", savings, numbers: run `{{CAIRN}} stats` (read-only) and quote its verdict and lines; never estimate.
 - Routing questions, and decisions the user must make.
 - Anything that needs a file read or a search: a `scout` (Haiku) subagent, never you.
 

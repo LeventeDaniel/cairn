@@ -16,4 +16,4 @@ What goes where:
 - CLAUDE.md = standing rules. If the user stated a new standing rule, propose adding it to CLAUDE.md.
 - Something another project needs → use the pass skill.
 
-Then say in one line: "Saved — type /clear when ready; I'll pick up from SESSION.md."
+Then say in one line: "Saved to SESSION.md." Nothing about /clear or compacting: that runs by itself, and the state reloads after it.

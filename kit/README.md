@@ -64,7 +64,8 @@ new task send it to Home. At most `max_running` (3) workers run; the rest wait a
 | `board [--json]` | the task board, statuses from `claude agents` |
 | `cleanup [--json]` | stale worktrees (no commit for `stale_days`) and old closed sessions; reports only, removes nothing |
 | `spawn --where bg/cloud --name N --task T [--repo P] [--new-repo PURPOSE] [--from-session S] [--dry-run]` | start a session elsewhere (`--dry-run` prints the command and prompt) |
-| `audit` | what loads into every session, in tokens |
+| `audit [--exact]` | what loads into every session, in tokens (`--exact`: Claude Code's own count) |
+| `stats [--days N] [--json]` | results: what Cairn's compactions saved and cost, tasks, limit hits, the A/B numbers and a verdict. Counted from transcripts, the mod's ledger and the board; "not measured" where there is nothing to count |
 | `statusline`, `prompt`, `session-start`, `stop` | the hooks themselves (`stop` puts a worker's own last line on its board row) |
 
 ## Tuning (`~/.claude/cairn/config.json`)

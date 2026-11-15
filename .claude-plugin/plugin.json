@@ -1,6 +1,6 @@
 {
   "name": "cairn",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Cairn mod: compacts at clean breaks with your notes, and a pane for context, plan usage, every repo's sessions and Cairn Home's task board",
   "types": "./types/index.d.ts"
 }

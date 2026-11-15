@@ -231,3 +231,25 @@ test('state goes where the Cairn hook lives, not into the folder the mod is load
   expect(writes.length).toBeGreaterThan(0)
   expect(writes.filter(w => !w.replace(/\\/g, '/').startsWith('C:/Users/me/.claude/cairn/'))).toEqual([])
 })
+
+test('the pane shows the counted results from cairn.py stats: verdict up front, the lines under Details', async ($, on) => {
+  ;(WS as any).results = {
+    verdict: 'ABOUT BREAK-EVEN: net 715k token-reads saved, 0.4% of what the sessions with Cairn would have read (avoided 11.5M token-reads, cost 10.8M with its own text).',
+    short: 'ABOUT BREAK-EVEN: net 715k token-reads saved, 0.4% of what the sessions with Cairn would have read',
+    lines: ['Compactions: 27 (10 by Cairn, 17 by the app or typed)', 'New session size: not measured (run `cairn.py stats`)'],
+  }
+  engine(on, { hooks: HOOKS })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' } as any)
+  const top = (await ui.find({ type: 'Text', text: /Cairn so far/ }))?.text
+  expect(top).toContain('ABOUT BREAK-EVEN: net 715k token-reads saved')
+  expect(top?.includes('avoided 11.5M')).toBe(false)   // the short form up front
+  expect(await ui.find({ type: 'Text', text: /10 by Cairn/ })).toBeUndefined()
+  await ui.press({ key: 'details' })
+  expect(await ui.find({ type: 'Text', text: /10 by Cairn/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /not measured/ })).toBeTruthy()
+  await ui.press({ key: 'details' })
+  await ui.unmount()
+  delete (WS as any).results
+})

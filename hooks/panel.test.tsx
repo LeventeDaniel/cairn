@@ -28,12 +28,11 @@ test('a board task and its live session show once', () => {
   expect(r.needs[0]!.hint).toBe('confirm the cap')
 })
 
-test('savings show only with real ledger data; advice only when action is needed', () => {
-  expect(health(snap([]), [], 0, 80).saved).toBeUndefined()
-  const ev = [{ kind: 'compaction' as const, t: 1000, sid: 's', by: 'cairn' as const, before: 200000, after: 20000 }]
-  expect(health(snap([]), ev, 2000, 80).saved).toMatch(/^Cairn saved about \$\d+(\.\d\d)? this week \(estimate\)$/)
-  expect(advice(health(snap([{ kind: 'five_hour', percentUsed: 20 }]), [], 0, 80), snap([]))).toBeUndefined()
-  expect(advice(health(snap([{ kind: 'five_hour', percentUsed: 85 }]), [], 0, 80), snap([]))).toMatch(/high/)
+test('advice only when action is needed; a long chat is not the person\'s job while Cairn compacts', () => {
+  expect(advice(health(snap([{ kind: 'five_hour', percentUsed: 20 }]), 80), snap([]))).toBeUndefined()
+  expect(advice(health(snap([{ kind: 'five_hour', percentUsed: 85 }]), 80), snap([]))).toMatch(/high/)
+  expect(advice(health(snap([]), 80), snap([], 2), true)).toBeUndefined()        // compaction on: nothing to do
+  expect(advice(health(snap([]), 80), snap([], 2), false)).toMatch(/fresh one/)  // compact_mode off
   expect(sessionHref('nope')).toBeUndefined()
 })
 

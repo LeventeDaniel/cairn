@@ -31,7 +31,7 @@ def run(m, *argv, stdin=None):
         with redirect_stdout(out):
             {"dispatch": m.cmd_dispatch, "stop": m.cmd_stop, "report": m.cmd_report, "board": m.cmd_board,
              "prompt": m.cmd_prompt, "new-repo": m.cmd_new_repo, "session-start": m.cmd_session_start,
-             "spawn": m.cmd_spawn}[argv[0]]()
+             "spawn": m.cmd_spawn, "stats": m.cmd_stats, "workspace": m.cmd_workspace}[argv[0]]()
     finally:
         sys.stdin = old
     return out.getvalue()

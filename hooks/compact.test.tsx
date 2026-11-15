@@ -140,8 +140,8 @@ test('/cairn compact queues the compaction and retries if a turn still holds it'
 
   const out: any = await $.command.run({ command: 'cairn', args: 'compact' } as any)
   expect(out.text).toContain('queued')
-  for (let i = 0; i < 500 && !toasts.some(t => t.includes('Compacted')); i++) await Promise.resolve()
+  for (let i = 0; i < 500 && !toasts.some(t => t.includes('compacted')); i++) await Promise.resolve()
   expect(attempts).toBe(2)
   expect(seen.compact.command).toBe('compact')
-  expect(toasts.some(t => t.includes("Compacted with Cairn's notes"))).toBe(true)
+  expect(toasts).toEqual(['Cairn compacted this chat: you asked'])   // one line, after the fact
 })
