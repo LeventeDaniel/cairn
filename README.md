@@ -8,9 +8,9 @@ By default the pane shows three things, in plain words:
 
 - **Needs you**: sessions or board tasks waiting for your answer, one line each ("Nothing needs you." when clear), plus notes waiting in the inbox.
 - **Running now**: sessions working at the moment, one line each.
-- **Your plan**: a bar and "N% of your 5-hour limit used". When the savings ledger has real Cairn compactions it adds "Cairn saved about $N this week (estimate)". One short advice sentence appears only when you should act (plan nearly used, chat very long).
+- **Your plan**: a bar and "N% of your 5-hour limit used". Under it, "Cairn so far: …": the verdict of `cairn.py stats`, counted, never estimated (see Results below). One short advice sentence appears only when you should act (plan nearly used, chat very long).
 
-Press **▸ Details** (closed by default) for everything else: context breakdown and compaction thresholds, usage per day, savings ledger and measured numbers, work tracked, compaction history, workspace per repo, board, stale cleanup and inbox. Session lines are plain text for now: the pane cannot link to a desktop session.
+Press **▸ Details** (closed by default) for everything else: context breakdown and compaction thresholds, usage per day, the counted results, work tracked, compaction history, workspace per repo, board, stale cleanup and inbox. Session lines are plain text for now: the pane cannot link to a desktop session.
 
 ## What it does
 
@@ -20,16 +20,15 @@ Press **▸ Details** (closed by default) for everything else: context breakdown
 - **Checks the summary**: if it dropped the recently edited files, Cairn appends its state block to the summary.
 - **Subagent compactions** keep only the task, findings with file:line, and conclusions.
 - **Decides when to compact** (`smart`, the default). At the end of each turn it looks at how full the context is and what just happened:
-  - a finished piece of work (the task wrapped up, a commit or push, a failing command passing again) from `compact_soft` → it offers in a band above the prompt
+  - a finished piece of work (the task wrapped up, a commit or push, a failing command passing again) from `compact_soft` → it compacts once you have been away `idle_minutes` (a new prompt before that calls it off)
   - the same from `compact_at` → it compacts right away
-  - any other calm turn end from `compact_at` → it offers
+  - any other calm turn end from `compact_at` → it compacts once you have been away `idle_minutes`
   - an open failure (you are mid-debug) → it waits, until `compact_hard`
   - at `compact_hard` → it compacts at the turn end, so the engine's own auto-compact never cuts in mid-task
-  - an offer nobody answers runs by itself after `idle_minutes` with no new prompt, while you are away
-  The band has **Compact now** and **Not now** (quiet until context grows 10 more points).
+  It never asks: there is no band and no "compact now?" choice. A planned compaction is one dim line in the pane, and a finished one is one toast saying why it ran. `/cairn compact` runs one on demand.
 - **Watches the prompt cache** (`smart` and `auto`). A reply re-reads the whole context; inside the cache window that read is cheap, after it the full context is read again at full price.
-  - left idle with at least `cache_min_tokens` in context, it compacts 5 minutes before the cache expires, while compacting is still cheap (Not now still holds)
-  - a session resumed after the cache expired, with a big context, gets an offer to compact before the first reply (never a compaction by itself). A worker whose task is finished is told to archive instead, and a context near the floor gets no offer
+  - left idle with at least `cache_min_tokens` in context, it compacts 5 minutes before the cache expires, while compacting is still cheap
+  - a session resumed after the cache expired is left alone at its start (after an app restart every session starts at once, and compacting them all cold is a full-price read each). The first reply runs on the full context, is logged as a cold re-read, and the turn end after it decides as usual, from a warm cache. A worker whose task is finished gets one pane line saying to archive it
 - **Workspace** section in the pane: every repo in `~/.claude/REPOS.md` with its goal (from SESSION.md), its live sessions (busy, idle or waiting, from `claude agents --json`), their size and whether their prompt cache is still warm, worktrees and notes waiting. It comes from `cairn.py workspace --json`, run with the same Python as Cairn's hook, at most once a minute. In a terminal: `python ~/.claude/cairn/cairn.py workspace`.
 - **Board** under Workspace: the tasks Cairn Home started (`~/.claude/cairn/board.json`): running, waiting on you, queued, recently done, each with its model/effort and last one-line report.
 - **Cairn Home** (a session in `~/.claude/cairn/home`) holds only the board, so it compacts much earlier: see the `home_compact_*` settings.
@@ -52,14 +51,14 @@ These go in `~/.claude/cairn/config.json`, next to Cairn's own keys:
 
 | key | default | meaning |
 |---|---|---|
-| `compact_mode` | `smart` | `smart` (Cairn decides), `ask` (offers only), `auto` (compacts at `compact_at` whatever the state) or `off` |
+| `compact_mode` | `smart` | `smart` (Cairn decides and acts by itself, it never asks), `auto` (compacts at `compact_at` whatever the state) or `off`. `ask` from older configs is read as `smart` |
 | `compact_soft` | `40` | % from which a finished piece of work is a reason to compact |
 | `compact_at` | `60` | % from which any calm turn end is |
 | `compact_hard` | `72` | % at which it compacts at the next turn end, mid-task or not |
 | `compact_soft_tokens` / `compact_at_tokens` / `compact_hard_tokens` | `100000` / `200000` / `400000` | the same three steps as token counts; whichever comes first applies (on a 1M-token window the percentages alone are 400k / 600k / 720k). `0` = percentage only |
 | `compact_min_gain_tokens` | `60000` | a compaction cannot go below the floor (system prompt, tools, skills, the summary, re-attached files: often 60-90k tokens). Cairn learns the floor from the first reply after each compaction and lifts any step that sits under floor + this much; near the floor there is nothing to remove and the compaction itself costs a new cache write. `0` = steps as configured |
-| `usage_stop` | `95` | from this % of the 5-hour or weekly limit Cairn starts no compaction by itself (at the limit it can only fail). **Compact now** still works |
-| `idle_minutes` | `3` | an unanswered offer runs after this many minutes with no new prompt |
+| `usage_stop` | `95` | from this % of the 5-hour or weekly limit Cairn starts no compaction by itself (at the limit it can only fail). `/cairn compact` still works |
+| `idle_minutes` | `3` | a compaction planned at a clean break runs after this many minutes with no new prompt |
 | `cache_ttl_minutes` | `60` | how long the prompt cache lasts after a reply. Taken from Claude Code's `promptCacheTtl` setting (`5m` / `1h`) when that is set. Below 15 the idle cache guard is off, and Claude Code's own `idleCompaction` covers idle sessions |
 | `cache_min_tokens` | `60000` | contexts smaller than this are cheap to re-read cold, so the cache checks leave them alone |
 | `trim_over` | `4000` | tool results longer than this many characters get trimmed (errors: 4×) |
@@ -92,6 +91,13 @@ The pane and compaction help work on their own. The `SESSION.md` notes, inbox an
 
 MIT
 
-## Savings ledger
+## Results: is it worth running?
 
-Cairn logs each main-session compaction (tokens before and after, and whether Cairn or the app triggered it) and each cache-expired warning (and whether you compacted after it) to `~/.claude/cairn/state/ledger.json` (last 500 events). The pane's **Savings** section sums the last 7 days. Savings are an **estimate**, not a measurement: only compactions Cairn triggered count, each assumed to spare `ledger_turns` (10) later replies from re-reading the removed tokens at `ledger_read_usd_per_mtok` ($0.30/Mtok), plus the one full-price re-read (`ledger_write_usd_per_mtok`, $3.75/Mtok) avoided when the cache was cold. All three are tunable in `config.json`. The cost-per-session comparison before vs after the first ledger event needs 3+ sessions on each side in `usage-days.json`; otherwise the pane says there is not enough data.
+`python ~/.claude/cairn/cairn.py stats` answers that with counted numbers and one verdict (`USEFUL`, `ABOUT BREAK-EVEN`, `NOT USEFUL SO FAR` or `NOT PROVEN`). The pane shows the same: the verdict under **Your plan**, the lines under Details. Nothing is estimated; what cannot be counted says "not measured".
+
+- **Compactions**: from the transcripts, per compaction: the context before, the context of the first reply after, and how many replies really followed. Avoided = tokens removed x replies that followed. Cost = the history the summary read (x10 when the prompt cache had expired and nobody came back) + the cache the next reply had to write again (a cache write costs 12.5-20 cached reads) + Cairn's own text in every reply (its size comes from the A/B run). Cairn is credited only with the compactions its ledger (`~/.claude/cairn/state/ledger.json`) says it started.
+- **Startup**: Claude Code's own count of a new session (`claude -p /context`, free, read at most once a day into `state/baseline.json`), first reading against the latest, and the median first reply of real sessions.
+- **Tasks**: routed by Cairn Home, finished, dispatch-to-done time (recorded when a task is reported done; kept in `state/tally.json` after the row leaves the board), finished workers closed, usage-limit hits (from the transcripts) and workers stopped by an API error.
+- **A/B**: the benchmark runs in `bench/` (`bench/run.py`, `bench/scenario.py`) write `state/measured.json`; `stats` quotes them next to the live numbers. See `bench/RESULTS.md`.
+
+`stats --days N` changes the window (default 30), `--json` prints everything including a per-session table.

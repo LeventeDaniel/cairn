@@ -27,8 +27,20 @@ def call(claude, cfg, cwd, model, prompt, resume=None):
                 secs=round(time.time() - t, 1), sid=j.get('session_id'), turns=j.get('num_turns', 0))
 def ok(cwd, check):
     return subprocess.run(check, shell=True, cwd=cwd, capture_output=True, text=True, env=dict(os.environ, PYTHONPATH=cwd)).returncode == 0
+def publish(res, model):
+    """The scenario part of ~/.claude/cairn/state/measured.json (read by `cairn.py stats` and the pane)."""
+    a, b = res['A_one_session'], res['B_handoff']
+    n = min(len(a['rows']), len(b['rows']))
+    if not n or a['correct'] < n or b['correct'] < n: print('not published: a stage failed its check in one arm'); return
+    mf = os.path.join(run.HOME, 'cairn/state/measured.json')
+    try: m = json.load(open(mf))
+    except Exception: m = {}
+    m['scenario'] = dict(runs=1, model=model, stageCount=n, oneSession=a['usd'], stages=b['usd'], secsOne=a['secs'], secsStages=b['secs'])
+    json.dump(m, open(mf, 'w'), indent=1); print('published to', mf, m['scenario'])
 def main():
     a = sys.argv; model = a[a.index('--model') + 1] if '--model' in a else 'haiku'
+    if '--publish' in a:   # an earlier run's results file, no new calls
+        return publish(json.load(open(a[a.index('--publish') + 1])), model)
     idle = int(a[a.index('--idle') + 1]) if '--idle' in a else 330
     n = int(a[a.index('--stages') + 1]) if '--stages' in a else len(STAGES); st = STAGES[:n]
     per = {'haiku': 0.03, 'sonnet': 0.1, 'opus': 0.5}.get(model, 0.1)
@@ -49,4 +61,5 @@ def main():
         shutil.rmtree(w, ignore_errors=True); shutil.rmtree(cfg, ignore_errors=True)
     json.dump(res, open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results-scenario.json'), 'w'), indent=1)
     for k, v in res.items(): print(k, 'usd', round(v['usd'], 3), 'secs', v['secs'], 'correct', v['correct'], '/', n, 'ctx', v['ctx_curve'])
+    publish(res, model)
 main()

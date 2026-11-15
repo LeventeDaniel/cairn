@@ -58,7 +58,7 @@ test('the ledger keeps at most 500 events', () => {
   expect(l.length).toBe(500)
 })
 
-test('a compaction the app runs is logged as app; one Cairn queues is logged as cairn; the pane says estimate', async ($, on) => {
+test('a compaction the app runs is logged as app; one Cairn queues is logged as cairn; the pane shows no estimate', async ($, on) => {
   const files: Record<string, string> = {}
   let running = () => {}
   let release = () => {}
@@ -101,8 +101,9 @@ test('a compaction the app runs is logged as app; one Cairn queues is logged as 
     props: { title: 'Cairn', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
   } as any)
   await ui.press({ key: 'details' })
-  expect((await ui.find({ type: 'Text', text: /Last 7 days: 2 compaction/ }))?.text).toContain('1 Cairn, 1 app')
-  expect((await ui.find({ type: 'Text', text: /Estimate only/ }))).toBeTruthy()
+  // No modelled savings in the pane: what it shows is counted by `cairn.py stats`, or it says there is nothing yet.
+  expect(await ui.find({ type: 'Text', text: /Est\. saved|Estimate only|saved about \$/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Not counted yet/ })).toBeTruthy()
   await ui.unmount()
 })
 

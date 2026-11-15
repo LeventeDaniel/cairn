@@ -40,17 +40,20 @@ export type Compaction = {
   fellBack: boolean
 }
 
-/** A compaction Cairn is offering in the band above the prompt. */
+/**
+ * A compaction Cairn has planned for when the person stays away (it never asks), or, with `done`, a note
+ * that this finished worker should be archived. One line in the pane either way.
+ */
 export type Offer = {
-  /** context % when offered */
+  /** context % when planned */
   percent: number
-  /** why now, in a few words */
+  /** why, in a few words */
   reason: string
-  /** clock time of the offer */
+  /** clock time it was planned */
   at: number
-  /** offered at session start because the prompt cache expired while away */
+  /** set at session start, after the prompt cache expired while away */
   cold?: boolean
-  /** a finished worker: the band advises archiving and has no "Compact now" */
+  /** a finished worker: nothing is compacted, the pane says to archive it */
   done?: boolean
 }
 
@@ -79,6 +82,8 @@ export type Workspace = {
   }[]
   unregistered: { title: string; cwd?: string | null; status?: string | null; kind?: string | null }[]
   board?: BoardTask[]
+  /** `cairn.py stats` in short: counted from transcripts, the ledger and the board, nothing estimated */
+  results?: { verdict: string; short?: string; lines: string[] }
   stale?: { name: string; worktrees: { path: string; branch: string; dirty: boolean; ageDays: number }[]; oldSessions: number }[]
 }
 
