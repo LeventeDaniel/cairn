@@ -242,8 +242,23 @@ def topic_shift(prompt, cwd):
 
 
 def session_file(cwd):
-    """SESSION.md of the folder this session runs in (a git worktree has its own)."""
-    return Path(os.environ.get("CLAUDE_PROJECT_DIR") or cwd) / "SESSION.md"
+    """SESSION.md of the folder this session runs in (a git worktree has its own).
+
+    CLAUDE_PROJECT_DIR is the folder the session was opened in, which is right while the session works
+    inside it. The desktop app keeps it at the main checkout for a session that runs in a worktree: then
+    the worktree's own top folder (the one holding `.git`) wins, or the worker is read as having no goal."""
+    proj = os.environ.get("CLAUDE_PROJECT_DIR")
+    try:
+        here = Path(cwd).resolve()
+        top = next((p for p in [here, *here.parents][:12] if (p / ".git").exists()), None)
+        if top and proj:
+            inside = os.path.normcase(str(Path(proj).resolve())).startswith(
+                os.path.normcase(str(top)).rstrip("\\/") + os.sep) or Path(proj).resolve() == top
+            if not inside:
+                return top / "SESSION.md"
+    except OSError:
+        pass
+    return Path(proj or cwd) / "SESSION.md"
 
 
 def watcher_mode():

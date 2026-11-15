@@ -155,6 +155,31 @@ class Hooks(unittest.TestCase):
         self.assertNotIn("new task", self.prompt("w2", wt, text))
         self.assertIn("SendMessage", self.prompt("w2", wt, "now go and rewrite the payroll importer with proper retries everywhere"))
 
+    def test_worktree_session_reads_its_own_session_file_when_the_project_dir_is_the_main_checkout(self):
+        git = lambda *a, cwd: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *a],
+                                             cwd=cwd, capture_output=True, text=True)
+        git("init", "-q", cwd=self.repo)
+        git("commit", "-q", "--allow-empty", "-m", "init", cwd=self.repo)
+        wt = self.tmp / "wt2"
+        if git("worktree", "add", "-q", str(wt), cwd=self.repo).returncode:
+            self.skipTest("git worktree not available")
+        (wt / "SESSION.md").write_text("## Goal\nRedesign the marketing website banner\n")
+        (wt / "src").mkdir()
+        os.environ["CLAUDE_PROJECT_DIR"] = str(self.repo)  # what the desktop app gives a worktree session
+        try:
+            out = run(self.m, "session-start", stdin={"session_id": "w3", "cwd": str(wt), "source": "compact"})
+            self.assertIn("Redesign the marketing website banner", out)
+            self.assertNotIn("goal: not set yet", out)
+            self.assertEqual(self.m.session_file(str(wt / "src")), wt.resolve() / "SESSION.md")
+            # a session working inside its own project folder keeps that folder's file
+            sub = self.repo / "pkg"
+            sub.mkdir()
+            self.assertEqual(self.m.session_file(str(sub)), self.repo / "SESSION.md")
+            os.environ["CLAUDE_PROJECT_DIR"] = str(sub)
+            self.assertEqual(self.m.session_file(str(sub)), sub / "SESSION.md")
+        finally:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+
     def test_plan_usage_from_before_the_reset_is_not_reported(self):
         st = self.m.CAIRN / "state" / "u1.json"
         st.parent.mkdir(parents=True)
