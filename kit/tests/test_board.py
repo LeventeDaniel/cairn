@@ -30,7 +30,8 @@ def run(m, *argv, stdin=None):
     try:
         with redirect_stdout(out):
             {"dispatch": m.cmd_dispatch, "stop": m.cmd_stop, "report": m.cmd_report, "board": m.cmd_board,
-             "prompt": m.cmd_prompt, "new-repo": m.cmd_new_repo, "session-start": m.cmd_session_start}[argv[0]]()
+             "prompt": m.cmd_prompt, "new-repo": m.cmd_new_repo, "session-start": m.cmd_session_start,
+             "spawn": m.cmd_spawn}[argv[0]]()
     finally:
         sys.stdin = old
     return out.getvalue()

@@ -7,7 +7,7 @@ Subcommands (wired up by install.py):
   session-start  SessionStart hook: restores SESSION.md, delivers inbox notes, keeps repo registry
   stop           Stop / StopFailure hook: a worker's turn ended (or an API error such as the usage
                  limit cut it off); its own last line, or the error, goes on its board row
-  audit          prints what loads into every session and how big it is
+  audit          prints what loads into every session and how big it is (--exact: add Claude Code's own count)
   spawn          lets Claude start a background/cloud session (or a new repo) on its own
   dispatch       Home: add a task to the board (checks the running cap, fills model/effort defaults)
   report         update a board row (session id, status, one-line report)
@@ -694,6 +694,76 @@ def tok(text):
     return len(text) // 4
 
 
+def front(path):
+    """The frontmatter of a skill, command or agent file: the part that is listed in every session."""
+    head = Path(path).read_text(encoding="utf-8", errors="replace").split("---")
+    return head[1] if len(head) > 2 else ""
+
+
+def plugin_costs():
+    """[(tokens, name, skills, MCP servers, source)], heaviest first, for every plugin on this machine whose
+    skills and commands are listed in every session. Plugins synced from the claude.ai account are not in
+    settings.json: seen 2026-11-15, the audit said "1 plugin" while 7 synced ones listed 50 skills (~5.7k
+    tokens, the largest cost the user can remove)."""
+    base = HOME / "plugins"
+    roots = []
+    if (base / "synced").is_dir():
+        roots += [(d, "synced from claude.ai") for d in sorted((base / "synced").glob("*/*")) if d.is_dir()]
+    inst = read_json(base / "installed_plugins.json", {})
+    plugins = inst.get("plugins") if isinstance(inst, dict) else None
+    for entries in plugins.values() if isinstance(plugins, dict) else []:
+        for e in entries if isinstance(entries, list) else []:
+            p = Path(str(e.get("installPath") or "")) if isinstance(e, dict) else None
+            if p and p.is_dir() and str(p) != ".":
+                roots.append((p, "installed"))
+    out = []
+    for d, src in roots:
+        try:
+            descs = [tok(front(s)) for s in [*d.glob("skills/*/SKILL.md"), *d.glob("commands/*.md")]]
+        except OSError:
+            continue
+        mcp = read_json(d / ".mcp.json", {})
+        servers = mcp.get("mcpServers") if isinstance(mcp, dict) else None
+        if not descs and not servers:
+            continue
+        meta = read_json(d / ".claude-plugin" / "plugin.json", {})
+        name = (meta.get("name") if isinstance(meta, dict) else "") or d.name
+        out.append((sum(descs), str(name), len(descs), len(servers) if isinstance(servers, dict) else 0, src))
+    return sorted(out, reverse=True)
+
+
+def context_table(text):
+    """(total, [(category, tokens)]) from what `claude -p /context` prints: Claude Code's own count of what
+    is in a new session here. Free space, the autocompact buffer and deferred tools (not loaded until used)
+    are left out."""
+    rows, on = [], False
+    for line in str(text).splitlines():
+        if line.startswith("#"):
+            on = "usage by category" in line
+            continue
+        if on and line.startswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            skip = cells[0] in ("Category", "Free space", "Autocompact buffer", "Messages") or "deferred" in cells[0]
+            if len(cells) >= 2 and not skip and not set(cells[0]) <= set("-: "):
+                rows.append((cells[0], cells[1]))
+    total = re.search(r"\*\*Tokens:\*\*\s*([^\n]+)", str(text))
+    return (total.group(1).strip() if total else ""), rows
+
+
+def context_exact(cwd):
+    """Ask the CLI itself. `/context` in print mode is a local command: no model call, no cost (checked on
+    2.1.325: num_turns 0, total_cost_usd 0, about 5 s)."""
+    exe = claude_exe()
+    if not exe:
+        return "", []
+    try:
+        r = subprocess.run([exe, "-p", "/context", "--no-session-persistence"], cwd=str(cwd), capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=90, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return "", []
+    return context_table(r.stdout)
+
+
 def cmd_audit():
     cwd = Path(os.getcwd())
     rows = []
@@ -724,14 +794,11 @@ def cmd_audit():
     skills = []
     for root in [HOME / "skills", cwd / ".claude" / "skills"]:
         for s in root.glob("*/SKILL.md") if root.exists() else []:
-            head = s.read_text(encoding="utf-8", errors="replace").split("---")
-            desc = head[1] if len(head) > 2 else ""
-            skills.append((tok(desc), s.parent.name))
+            skills.append((tok(front(s)), s.parent.name))
     agents = []
     for root in [HOME / "agents", cwd / ".claude" / "agents"]:
         for a in root.glob("*.md") if root.exists() else []:
-            head = a.read_text(encoding="utf-8", errors="replace").split("---")
-            agents.append((tok(head[1] if len(head) > 2 else ""), a.stem))
+            agents.append((tok(front(a)), a.stem))
 
     settings = read_json(HOME / "settings.json", {}) or {}
     plugins = [k for k, v in (settings.get("enabledPlugins") or {}).items() if v]
@@ -744,11 +811,30 @@ def cmd_audit():
     for t, n in sorted(skills, reverse=True)[:5]:
         print(f"          {t:>4}  {n}")
     print(f"  {sum(t for t, _ in agents):>6}  Agent descriptions ({len(agents)} agents)")
+    plug = plugin_costs()
+    plug_tokens, plug_skills = sum(p[0] for p in plug), sum(p[2] for p in plug)
+    if plug:
+        print(f"  {plug_tokens:>6}  Plugin skill descriptions ({plug_skills} skills in {len(plug)} plugins)")
+        for t, n, k, srv, src in plug:
+            more = f", declares {srv} MCP server(s)" if srv else ""
+            print(f"          {t:>4}  {n} ({k} skills{more}; {src})")
+    if "--exact" in sys.argv[2:]:
+        total, cats = context_exact(cwd)
+        if cats:
+            print(f"\nClaude Code's own count for a new session here (/context): {total}")
+            for label, t in cats:
+                print(f"  {t:>6}  {label}")
+        else:
+            print("\nNo exact count: the claude CLI was not found or did not answer.")
     print(f"\nEnabled plugins ({len(plugins)}): {', '.join(plugins) or 'none'}")
     print(f"User MCP servers ({len(mcp)}): {', '.join(mcp) or 'none'}  (each adds tool definitions; run /context for exact numbers)")
     flags = [f"{label} is {extra}: aim for under ~200 lines" for t, label, extra, _ in rows
              if "CLAUDE.md" in label and int(extra.split()[0]) > 200]
     flags += [f"Skill '{n}' description is ~{t} tokens: tighten to one or two sentences" for t, n in skills if t > 120]
+    if plug_tokens >= 1500:
+        flags.append(f"Plugins list {plug_skills} skills (~{plug_tokens} tokens) in every session, used or not: turn off "
+                     f"the ones not needed in Claude Code (/plugin, or the app's plugin settings). "
+                     f"Heaviest: {', '.join(p[1] for p in plug[:3])}")
     if flags:
         print("\nFlags:\n  - " + "\n  - ".join(flags))
 
@@ -1472,10 +1558,15 @@ def cmd_spawn():
     ap.add_argument("--repo", help="folder to run in (default: current folder)")
     ap.add_argument("--new-repo", metavar="PURPOSE", help="create a new repo folder named --name with this purpose")
     ap.add_argument("--from-session", default="", help="name/goal of the session that started this")
+    ap.add_argument("--model", default="", help="model for the new session (haiku, sonnet, opus, ...); default: the user's own")
+    ap.add_argument("--effort", default="", choices=["", "low", "medium", "high", "xhigh", "max"])
     ap.add_argument("--dry-run", action="store_true", help="print the command and prompt, start nothing")
     a = ap.parse_args(sys.argv[2:])
     c = cfg()
     name = repo_name(a.name, "task")
+    if a.model and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,60}", a.model):
+        print(f"REFUSED: '{a.model}' is not a model name (haiku, sonnet, opus, or a full model id).")
+        return
 
     # daily cap so it can't run away with your usage
     log = CAIRN / "spawned.md"
@@ -1523,7 +1614,7 @@ def cmd_spawn():
                   "open one); the session that started you reads it from claude.ai/code.")
     elif parent:
         report = (f"When done, report back in one line to the session that started you: run ListAgents, find the "
-                  f"session named \"{parent.get('name')}\" (session id {parent_sid}), and SendMessage it the result. "
+                  f"session named \"{parent.get('name')}\", and SendMessage it the result. "
                   f"If it isn't listed or the send fails, append the line to ~/.claude/inbox/{inbox_name}.md instead.")
     else:
         report = f"When done, append a one-line result to ~/.claude/inbox/{inbox_name}.md so the original session hears about it."
@@ -1542,15 +1633,29 @@ def cmd_spawn():
                   "Push first (with the user's OK) or use --where bg.")
             return
         cmdline = [exe, "--cloud", prompt]
+        if a.model or a.effort:
+            print("NOTE: --model / --effort are not passed to a cloud session; it runs with the account's default.")
     else:
-        cmdline = [exe, "--bg", "--name", name, prompt]
+        # Without these a background session runs on the user's main model at its default effort, whatever
+        # the task: a one-line lookup then costs what a design task does.
+        pick = (["--model", a.model] if a.model else []) + (["--effort", a.effort] if a.effort else [])
+        cmdline = [exe, "--bg", "--name", name, *pick, prompt]
     if a.dry_run:
         print("DRY RUN, nothing started:\n" + " ".join(cmdline[:-1]) + "\n---\n" + cmdline[-1])
         return
     try:
-        r = subprocess.run(cmdline, cwd=repo, capture_output=True, text=True, timeout=120)
+        # utf-8: the CLI prints "backgrounded · <id>", which the Windows default codepage turned into "Â·"
+        r = subprocess.run(cmdline, cwd=repo, capture_output=True, text=True, timeout=120,
+                           encoding="utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError) as ex:
         print(f"FAILED to start the session: {ex}. Tell the user and offer to do the task here instead.")
+        return
+    if r.returncode != 0 and "not trusted" in (r.stderr or r.stdout or "").lower():
+        # Seen live 2026-11-15: a folder Claude Code was never opened in (every --new-repo folder) is refused.
+        print("CANNOT START: Claude Code has not been told to trust " + str(repo) + " yet (a new folder never is), "
+              "and a background session cannot answer that prompt. In the Code tab, start the session with the "
+              "app's own session tool instead (that folder, name it '<repo>: <task>'), with this first message:\n" +
+              a.task + "\nIn a terminal: the user runs `claude` once in that folder and accepts the prompt.")
         return
     if r.returncode != 0:
         print("FAILED to start the session:\n" + ((r.stderr or r.stdout or "").strip()[:1500]) +

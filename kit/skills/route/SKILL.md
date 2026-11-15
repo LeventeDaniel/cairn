@@ -9,7 +9,7 @@ Pick the row, then act on it yourself. Start your reply with `↪ <what you did>
 | Continues this session's goal | do it here |
 | Same goal, heavy searching/reading/research | here, via `scout` / `researcher` subagents |
 | Hard design call, or stuck after 2 tries | here, via `architect` subagent |
-| Independent task in this repo (or unrelated to this session's goal) | in the desktop Code tab, start it with the app's own session tool (name it `<repo>: <task>`); in a terminal, start a background session: `{{SPAWN}} --where bg --name <short-name> --from-session "<this repo>: <goal>" --task "<self-contained task + needed context>"` |
+| Independent task in this repo (or unrelated to this session's goal) | in the desktop Code tab, start it with the app's own session tool (name it `<repo>: <task>`); in a terminal, start a background session: `{{SPAWN}} --where bg --name <short-name> --from-session "<this repo>: <goal>" --task "<self-contained task + needed context>"` (add `--model haiku` or `--model sonnet` when the task is simple; without it the session runs on my main model) |
 | Belongs to another repo in `~/.claude/REPOS.md` | same command with `--repo <that repo's path>`; if it's only info, not a task, `pass` it instead |
 | A new project that has no repo yet | same command with `--new-repo "<one-line purpose>" --name <kebab-name>` (creates the folder, git init, registers it, starts the session) |
 | Long/unattended, repo has a GitHub remote, needs nothing local-only | same command with `--where cloud` |
