@@ -374,6 +374,35 @@ class StopFailure(unittest.TestCase):
         self.assertEqual(r["last"], "Done.")
 
 
+class StillOpen(unittest.TestCase):
+    """A finished worker whose session nobody archived: Home hears of it on a prompt, not only at startup."""
+
+    def setUp(self):
+        self.m = load(Path(tempfile.mkdtemp()))
+        run(self.m, "dispatch", "--repo", "a", "--title", "a: job", "--session", "local_j")
+        self.m._AGENTS = [agent("u1", "a: job", "busy")]
+        run(self.m, "board")
+        run(self.m, "report", "t1", "--status", "done", "--note", "all good")
+        self.m._AGENTS = [agent("u1", "a: job", "idle")]
+        run(self.m, "board")
+        self.m.HOME_DIR.mkdir(parents=True)
+
+    def ask(self, sid, cwd):
+        return run(self.m, "prompt", stdin={"session_id": sid, "cwd": str(cwd), "prompt": "status?", "transcript_path": ""})
+
+    def test_home_is_told_to_archive_it_once_and_other_sessions_are_not(self):
+        first = self.ask("h1", self.m.HOME_DIR)
+        self.assertIn("1 finished worker(s) are still open: t1 local_j", first)
+        self.assertIn("mcp__ccd_session_mgmt__archive_session", first)
+        self.assertNotIn("still open", self.ask("h1", self.m.HOME_DIR))   # not on every prompt
+        self.assertNotIn("still open", self.ask("w9", self.m.HOME))       # only Home archives
+
+    def test_nothing_is_said_once_the_session_is_gone(self):
+        self.m._AGENTS = [agent("zz", "other: thing", "idle")]  # archived since the board was last read
+        self.assertNotIn("still open", self.ask("h2", self.m.HOME_DIR))
+        self.assertNotIn("open", json.loads(run(self.m, "board", "--json"))[0])
+
+
 class Inbox(unittest.TestCase):
     def setUp(self):
         self.m = load(Path(tempfile.mkdtemp()))
