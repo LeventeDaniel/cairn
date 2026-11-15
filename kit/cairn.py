@@ -343,9 +343,19 @@ def cmd_prompt():
 
     # Don't nag: speak when something changes, then every N prompts while it persists.
     nag = read_json(CAIRN / "nag" / f"{sid}.json", {}) or {}
-    key = f"{level}|{tools >= c['tool_results']}|{bool(notes and 'usage' in notes[-1])}|{bool(shift)}|{','.join(t['id'] for t in cut)}"
+    # Finished workers nobody archived keep their whole context alive. Home heard of them only when it
+    # started; one sat open for a day (seen live). The saved board says which (no CLI call per prompt).
+    left = still_open((read_json(BOARD, {}) or {}).get("tasks", [])) if home else []
+    key = (f"{level}|{tools >= c['tool_results']}|{bool(notes and 'usage' in notes[-1])}|{bool(shift)}|"
+           f"{','.join(t['id'] for t in cut)}|{','.join(sorted(t['id'] for t in left))}")
     since = nag.get("since", 0) + 1
-    speak = notes and (key != nag.get("key") or since >= c["repeat_every"])
+    speak = bool(notes or left) and (key != nag.get("key") or since >= c["repeat_every"])
+    if speak and left:
+        left = still_open(board_rows())  # about to say it: ask the app first, they may be archived by now
+        if left:
+            notes.append(f"{len(left)} finished worker(s) are still open: "
+                         + ", ".join(f"{t['id']} {t.get('session') or ''}".strip() for t in left[:12]) + ". " + ARCHIVE_HOW)
+        speak = bool(notes)
     write_json(CAIRN / "nag" / f"{sid}.json", {"key": key, "since": 0 if speak else since})
     inbox_note = take_inbox(marks.get("repo"))
     if not marks.get("named") and os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop":
