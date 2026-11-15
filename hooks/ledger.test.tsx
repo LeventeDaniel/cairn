@@ -158,3 +158,14 @@ test('a compaction after the cache already expired is not booked as a cold re-re
   expect(comps.map(e => (e as any).by)).toEqual(['cairn'])
   expect((comps[0] as any).cold).toBeUndefined()
 })
+
+test('with the floor known, only what went below it counts as removed', () => {
+  const now = 10 * 86400000
+  const ev = (floor?: number) => [{ kind: 'compaction' as const, t: now - 1000, sid: 's', by: 'cairn' as const,
+    before: 95000, after: 16000, ...(floor ? { floor } : {}) }]
+  expect(summarize(ev(), now).tokensRemoved).toBe(79000)        // the engine's count: summary alone
+  expect(summarize(ev(85000), now).tokensRemoved).toBe(10000)   // what the next reply really ran at
+  expect(summarize(ev(99000), now).tokensRemoved).toBe(0)
+  // events from before a floor was learned are held against the one known now
+  expect(summarize(ev(), now, { ledger_turns: 10, ledger_read_usd_per_mtok: 0.3, ledger_write_usd_per_mtok: 3.75, ledger_floor: 85000 }).tokensRemoved).toBe(10000)
+})

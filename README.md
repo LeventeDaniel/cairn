@@ -29,7 +29,7 @@ Press **▸ Details** (closed by default) for everything else: context breakdown
   The band has **Compact now** and **Not now** (quiet until context grows 10 more points).
 - **Watches the prompt cache** (`smart` and `auto`). A reply re-reads the whole context; inside the cache window that read is cheap, after it the full context is read again at full price.
   - left idle with at least `cache_min_tokens` in context, it compacts 5 minutes before the cache expires, while compacting is still cheap (Not now still holds)
-  - a session resumed after the cache expired, with a big context, gets an offer to compact before the first reply
+  - a session resumed after the cache expired, with a big context, gets an offer to compact before the first reply (never a compaction by itself). A worker whose task is finished is told to archive instead, and a context near the floor gets no offer
 - **Workspace** section in the pane: every repo in `~/.claude/REPOS.md` with its goal (from SESSION.md), its live sessions (busy, idle or waiting, from `claude agents --json`), their size and whether their prompt cache is still warm, worktrees and notes waiting. It comes from `cairn.py workspace --json`, run with the same Python as Cairn's hook, at most once a minute. In a terminal: `python ~/.claude/cairn/cairn.py workspace`.
 - **Board** under Workspace: the tasks Cairn Home started (`~/.claude/cairn/board.json`): running, waiting on you, queued, recently done, each with its model/effort and last one-line report.
 - **Cairn Home** (a session in `~/.claude/cairn/home`) holds only the board, so it compacts much earlier: see the `home_compact_*` settings.
@@ -56,12 +56,16 @@ These go in `~/.claude/cairn/config.json`, next to Cairn's own keys:
 | `compact_soft` | `40` | % from which a finished piece of work is a reason to compact |
 | `compact_at` | `60` | % from which any calm turn end is |
 | `compact_hard` | `72` | % at which it compacts at the next turn end, mid-task or not |
+| `compact_soft_tokens` / `compact_at_tokens` / `compact_hard_tokens` | `100000` / `200000` / `400000` | the same three steps as token counts; whichever comes first applies (on a 1M-token window the percentages alone are 400k / 600k / 720k). `0` = percentage only |
+| `compact_min_gain_tokens` | `60000` | a compaction cannot go below the floor (system prompt, tools, skills, the summary, re-attached files: often 60-90k tokens). Cairn learns the floor from the first reply after each compaction and lifts any step that sits under floor + this much; near the floor there is nothing to remove and the compaction itself costs a new cache write. `0` = steps as configured |
+| `usage_stop` | `95` | from this % of the 5-hour or weekly limit Cairn starts no compaction by itself (at the limit it can only fail). **Compact now** still works |
 | `idle_minutes` | `3` | an unanswered offer runs after this many minutes with no new prompt |
 | `cache_ttl_minutes` | `60` | how long the prompt cache lasts after a reply. Taken from Claude Code's `promptCacheTtl` setting (`5m` / `1h`) when that is set. Below 15 the idle cache guard is off, and Claude Code's own `idleCompaction` covers idle sessions |
 | `cache_min_tokens` | `60000` | contexts smaller than this are cheap to re-read cold, so the cache checks leave them alone |
 | `trim_over` | `4000` | tool results longer than this many characters get trimmed (errors: 4×) |
 | `trim_keep` | `800` | characters kept from a trimmed result |
 | `home_compact_soft` / `home_compact_at` / `home_compact_hard` | `15` / `25` / `50` | the three thresholds above, for a session in Cairn Home's folder |
+| `home_compact_soft_tokens` / `home_compact_at_tokens` / `home_compact_hard_tokens` | `50000` / `80000` / `150000` | the token steps for Cairn Home; lifted above the floor like the others |
 | `warn` / `urgent` / `usage_warn` | `50` / `70` / `80` | shared with Cairn |
 
 ## Install

@@ -50,6 +50,8 @@ export type Offer = {
   at: number
   /** offered at session start because the prompt cache expired while away */
   cold?: boolean
+  /** a finished worker: the band advises archiving and has no "Compact now" */
+  done?: boolean
 }
 
 /** One session of a repo, as `cairn.py workspace` reads it. */
@@ -98,7 +100,9 @@ export type BoardTask = {
 
 /** One line of the savings ledger (~/.claude/cairn/state/ledger.json). */
 export type LedgerEvent =
-  | { kind: 'compaction'; t: number; sid: string; by: 'cairn' | 'app'; before?: number; after?: number; cold?: boolean }
+  | { kind: 'compaction'; t: number; sid: string; by: 'cairn' | 'app'; before?: number; after?: number; cold?: boolean
+      /** what a context really restarts at here (system prompt, tools, summary, re-attached files), when known */
+      floor?: number }
   | { kind: 'cache-warning'; t: number; sid: string; source: 'cold' | 'guard'; tokens: number }
 
 declare module 'claude-code' {

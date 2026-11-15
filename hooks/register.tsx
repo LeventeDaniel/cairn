@@ -7,7 +7,7 @@ import type { LedgerEvent } from './ledger'
 import { advice, health, needsAndRunning } from './panel'
 import type { Item } from './panel'
 
-const VERSION = '0.8.0'
+const VERSION = '0.8.1'
 const PANE = 'cairn'
 const TITLE = 'Cairn'
 // Tunable in ~/.claude/cairn/config.json, next to Cairn's own keys.
@@ -26,6 +26,15 @@ const DEFAULTS = {
   compact_soft_tokens: 100000,
   compact_at_tokens: 200000,
   compact_hard_tokens: 400000,
+  // A compaction cannot go below the floor: system prompt, tools, skills, CLAUDE.md, the summary and the
+  // files the app re-attaches. Measured 2026-11-15: the engine reported 95k → 16k, the next reply ran at
+  // 85k. A step that sits under floor + this much is lifted to it: Home's steps (50k/80k/150k) were all
+  // under the floor, so Home compacted after nearly every turn to remove 3-10k tokens, paying a whole
+  // new cache write each time. 0 = steps as configured.
+  compact_min_gain_tokens: 60000,
+  // From this % of the 5-hour or weekly limit Cairn starts no compaction by itself: at the limit it can
+  // only fail (seen live), and just under it, it spends what is left. "Compact now" still works.
+  usage_stop: 95,
   idle_minutes: 3,     // an offer nobody answered runs after this long with no new prompt
   trim_over: 4000,     // tool results longer than this (chars) are trimmed before summarizing
   trim_keep: 800,      // chars kept from a trimmed result (head + tail)
@@ -143,17 +152,58 @@ async function loadCfg($: EngineInterface, home: string) {
   }
 }
 
-/** The three compaction steps as percentages of this window: the configured %, or the token count if that comes first. */
-export function steps(c: Cfg, window: number): Cfg {
+/**
+ * The three compaction steps as percentages of this window: the configured %, or the token count if that
+ * comes first. With a known floor (what the context restarts at after a compaction) no step sits lower
+ * than floor + compact_min_gain_tokens (x1, x1.5, x2), and none higher than the configured hard %,
+ * which stays the last stop before the engine's own auto-compact.
+ */
+export function steps(c: Cfg, window: number, floor = 0): Cfg {
   if (!(window > 0)) return c
   const first = (pct: number, tokens: number) => (tokens > 0 ? Math.min(pct, (tokens / window) * 100) : pct)
+  const gain = c.compact_min_gain_tokens
+  const lift = (pct: number, n: number) =>
+    (floor > 0 && gain > 0 ? Math.min(Math.max(pct, ((floor + n * gain) / window) * 100), c.compact_hard) : pct)
   return {
     ...c,
-    compact_soft: first(c.compact_soft, c.compact_soft_tokens),
-    compact_at: first(c.compact_at, c.compact_at_tokens),
-    compact_hard: first(c.compact_hard, c.compact_hard_tokens),
+    compact_soft: lift(first(c.compact_soft, c.compact_soft_tokens), 1),
+    compact_at: lift(first(c.compact_at, c.compact_at_tokens), 1.5),
+    compact_hard: lift(first(c.compact_hard, c.compact_hard_tokens), 2),
   }
 }
+
+/** Lowest of the last few readings: one reply that began with a big paste must not pass for the floor. */
+export function floorOf(readings: readonly number[] | undefined): number {
+  const r = (readings ?? []).filter(x => typeof x === 'number' && x > 0)
+  return r.length ? Math.min(...r) : 0
+}
+
+type Floors = { home?: number[]; work?: number[] }
+let floorTokens = 0     // what a context restarts at after a compaction, here (0 = not known yet)
+let floorDue = 0        // 1: a compaction just ran; 2: the next turn began, its first reading is the floor
+let floorBelow = 0      // ...and that reading has to be under this (the size before the compaction)
+
+async function loadFloor($: EngineInterface, home: string, measuredFloor = 0) {
+  floorDue = 0
+  try {
+    const f = ((await $.store.get('floor')) ?? {}) as Floors
+    floorTokens = floorOf((await inHome($, home)) ? f.home : f.work) || measuredFloor
+  } catch {
+    floorTokens = measuredFloor
+  }
+}
+
+async function learnFloor($: EngineInterface, tokens: number) {
+  const f = ((await $.store.get('floor')) ?? {}) as Floors
+  const kind = (await inHome($, await cairnHome($))) ? 'home' : 'work'
+  f[kind] = [...(f[kind] ?? []), tokens].slice(-5)
+  await $.store.set('floor', f)
+  floorTokens = floorOf(f[kind])
+}
+
+/** The plan's 5-hour or weekly limit is (nearly) used up: nothing Cairn starts by itself may spend from it. */
+const planSpent = (s: Snap) =>
+  cfg.usage_stop > 0 && Math.max(pct(s.limits, 'five_hour') ?? 0, pct(s.limits, 'seven_day') ?? 0) >= cfg.usage_stop
 
 // ------------------------------------------------------------ workspace (9)
 let wsAt = 0
@@ -426,7 +476,7 @@ async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'ra
   const home = await cairnHome($)
   await loadCfg($, home)
   const p = u.context.percent
-  const eff = steps(cfg, u.context.window)
+  const eff = steps(cfg, u.context.window, floorTokens)
   const level = p === undefined ? 0 : p >= Math.min(cfg.urgent, eff.compact_hard) ? 2 : p >= Math.min(cfg.warn, eff.compact_at) ? 1 : 0
   const s: Snap = {
     percent: p,
@@ -511,17 +561,20 @@ async function decide($: EngineInterface) {
   const now0 = await read($, snap)
   const p = now0.percent
   if (p === undefined) return
-  const eff = steps(cfg, now0.window)
+  const eff = steps(cfg, now0.window, floorTokens)
   // Finished work closes the failures left from earlier: a command that failed
   // once (a stray ls, a probe) must not hold back every later offer.
   if (done) await update($, work, x => ({ ...x, fails: [] }))
   const w = await read($, work)
-  const v = verdict(p, cfg.compact_mode, eff, done, w.fails.length, snoozedTo)
+  let v = verdict(p, cfg.compact_mode, eff, done, w.fails.length, snoozedTo)
+  if (v.act !== 'wait' && planSpent(now0)) {
+    v = { act: 'wait', reason: `plan usage at ${cfg.usage_stop}% or more: no compaction until it resets (${v.reason})` }
+  }
   try {
     // The last decision, for anyone checking why Cairn did or didn't compact.
     await $.fs.write(`${await cairnHome($)}/cairn/state/compact-decision.json`, JSON.stringify({
       t: Date.now() / 1000, version: VERSION, pct: p, mode: cfg.compact_mode, done, openFails: w.fails.length,
-      snoozedTo, act: v.act, reason: v.reason,
+      snoozedTo, act: v.act, reason: v.reason, floor: floorTokens,
     }))
   } catch { /* the log is optional */ }
   if (v.act === 'wait') return
@@ -560,6 +613,7 @@ async function finishedWorker($: EngineInterface): Promise<boolean> {
 async function idleCompact($: EngineInterface, seq: number) {
   if (seq !== turnSeq || pending || compacting || !(await read($, offer))) return
   if (await finishedWorker($)) return
+  if (planSpent(await read($, snap))) return // the offer stays up; the person can still press it
   await update($, offer, () => null)
   $.ui.toast("Cairn compacted while you were away: see the Cairn pane")
   queueCompact($)
@@ -583,9 +637,14 @@ function armCacheGuard($: EngineInterface) {
 
 async function cacheGuard($: EngineInterface, seq: number, done: number) {
   if (seq !== turnSeq || done !== compactions || pending || compacting || !cacheOn()) return
-  const { tokens = 0, percent = 0 } = await read($, snap)
+  const now0 = await read($, snap)
+  const { tokens = 0, percent = 0 } = now0
   if (percent < snoozedTo) return // "Not now" stands
   if (tokens < cfg.cache_min_tokens) return
+  // Under the floor plus the least worthwhile gain there is next to nothing to remove: the cold re-read
+  // costs about the same with or without the compaction, and the compaction is paid on top.
+  if (floorTokens > 0 && tokens < floorTokens + cfg.compact_min_gain_tokens) return
+  if (planSpent(now0)) return
   if (await finishedWorker($)) return
   await update($, offer, () => null)
   await warned($, 'guard', tokens)
@@ -626,6 +685,17 @@ async function coldCheck($: EngineInterface) {
   if (idle < cfg.cache_ttl_minutes) return
   const away = idle >= 120 ? `${Math.round(idle / 60)} h` : `${Math.round(idle)} min`
   const percent = (await read($, snap)).percent ?? 0
+  if (await finishedWorker($)) {
+    // Its task is done: the cheapest next step is none. Seen live 2026-11-15: the band offered to compact
+    // a finished 195k-token worker, it was pressed, and the whole history was read uncached for nothing.
+    await update($, offer, () => ({
+      percent, at: now, cold: true, done: true,
+      reason: `this session's task is finished: archive it instead of continuing here (a reply would re-read ${k(last.tokens)} tokens at full price)`,
+    }))
+    return
+  }
+  // Nothing worth removing: compacting would pay for a summary and still restart at about the same size.
+  if (floorTokens > 0 && last.tokens < floorTokens + cfg.compact_min_gain_tokens) return
   await warned($, 'cold', last.tokens)
   await update($, offer, () => ({
     percent, at: now, cold: true,
@@ -707,6 +777,14 @@ export const register: Register = on => {
       $.ui.log(`cairn: first measure failed: ${String(err)}`)
     }
     try {
+      const home = await cairnHome($)
+      let measuredFloor = 0
+      try {
+        measuredFloor = parseMeasured(await $.fs.read(`${home}/${MEASURED_FILE}`))?.history?.floor ?? 0
+      } catch { /* nothing measured yet */ }
+      await loadFloor($, home, measuredFloor)
+    } catch { /* no floor known: steps as configured */ }
+    try {
       await coldCheck($)
     } catch (err) {
       $.ui.log(`cairn: cold-start check failed: ${String(err)}`)
@@ -727,11 +805,20 @@ export const register: Register = on => {
 
   on('session.measure', async ($, e, next) => {
     await refresh($, e)
+    const t = e.context.tokens
+    if (floorDue === 2 && t !== undefined && t > 0) {
+      floorDue = 0
+      try {
+        if (t < floorBelow) await learnFloor($, t)
+      } catch (err) {
+        $.ui.log(`cairn: could not save the floor: ${String(err)}`)
+      }
+    }
     return next(e)
   })
 
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) { turnSeq++; turnDone = '' }
+    if (e.agentId === undefined) { turnSeq++; turnDone = ''; if (floorDue === 1) floorDue = 2 }
     return next(e)
   })
 
@@ -807,7 +894,10 @@ export const register: Register = on => {
       await logEvent($, {
         kind: 'compaction', t: at, sid: safeId(await $.session.id()), by: cairnRun ? 'cairn' : 'app',
         before: res.tokensBefore, after: res.tokensAfter, ...(cairnRun && coldRun ? { cold: true } : {}),
+        ...(floorTokens > 0 ? { floor: floorTokens } : {}),
       })
+      floorDue = 1
+      floorBelow = res.tokensBefore ?? 0
     }
     if (!isSubagent) { snoozedTo = 0; compactions++; await update($, offer, () => null) }
     return messages === res.messages ? res : { ...res, messages }
@@ -831,6 +921,14 @@ export const register: Register = on => {
     if (!o || e.props.hasSurvey || e.props.isWorking || pending || compacting) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     const idle = cfg.compact_mode === 'smart' && !o.cold ? ` · runs by itself in ${cfg.idle_minutes} min if you're away` : ''
+    if (o.done) {
+      return (
+        <Box>
+          <Text>Cairn: {o.reason} </Text>
+          <Button key="later" label="OK" onPress={() => snooze($)} />
+        </Box>
+      )
+    }
     const say = o.cold ? `Cairn: compact before you continue (${o.reason})` : `Cairn: good moment to compact (${o.reason})`
     return (
       <Box>
@@ -863,7 +961,7 @@ export const register: Register = on => {
     const fh = pct(s.limits, 'five_hour'), sd = pct(s.limits, 'seven_day')
     const usageHigh = (fh ?? 0) >= cfg.usage_warn || (sd ?? 0) >= cfg.usage_warn
     const { needs, running } = needsAndRunning(w2, s.inbox)
-    const hl = health(s, led, now, cfg.usage_warn, cfg)
+    const hl = health(s, led, now, cfg.usage_warn, { ...cfg, ledger_floor: floorTokens })
     const tip = advice(hl, s)
     const row = (it: Item, mark: string, hot: boolean) => (
       <Box flexDirection="column">
@@ -898,9 +996,10 @@ export const register: Register = on => {
             : <Text color={color}>{'█'.repeat(filled)}{'░'.repeat(width - filled)} {p.toFixed(0)}%</Text>}
           {s.tokens !== undefined && s.window > 0 &&
             <Text dimColor>{k(s.tokens)} of {k(s.window)} tokens · compact {cfg.compact_mode}: {(() => {
-              const e = steps(cfg, s.window)
+              const e = steps(cfg, s.window, floorTokens)
               const at = (pct: number) => `${k((pct / 100) * s.window)} (${pct.toFixed(0)}%)`
-              return `after a finished task from ${at(e.compact_soft)} · at any calm stop from ${at(e.compact_at)} · always from ${at(e.compact_hard)}`
+              const fl = floorTokens > 0 ? ` · a compaction restarts at about ${k(floorTokens)} here` : ''
+              return `after a finished task from ${at(e.compact_soft)} · at any calm stop from ${at(e.compact_at)} · always from ${at(e.compact_hard)}${fl}`
             })()}</Text>}
           <Text> </Text>
           <Text bold>Plan usage</Text>
@@ -915,7 +1014,7 @@ export const register: Register = on => {
           ))}
           <Text> </Text>
           <Text bold>Savings</Text>
-          {summaryLines(led, dd, now, cfg).map((l, i) => (
+          {summaryLines(led, dd, now, { ...cfg, ledger_floor: floorTokens }).map((l, i) => (
             <Text dimColor={i > 0 && l.startsWith('Estimate')}>{l}</Text>
           ))}
           {meas.map((l, i) => (
