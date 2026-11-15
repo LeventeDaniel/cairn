@@ -191,6 +191,9 @@ class StopHook(unittest.TestCase):
         self.m._AGENTS = [agent("u1", "a: long job", "busy")]
         self.row()
         run(self.m, "report", "t1", "--note", "still running")
+        b = json.loads(self.m.BOARD.read_text())
+        b["tasks"][0]["updated"] -= 5   # the note is seconds old: on Windows two clock reads in a row can be equal
+        self.m.BOARD.write_text(json.dumps(b))
         self.stop()
         self.m._AGENTS = [agent("u1", "a: long job", "idle")]
         r = self.row()
@@ -255,6 +258,34 @@ class Edges(unittest.TestCase):
         self.assertIn("CREATED project", run(m, "new-repo", "--name", ".", "--purpose", "x"))
         self.assertFalse((ws / ".git").exists())
 
+    def test_spawn_passes_the_chosen_model_and_effort_to_a_background_session(self):
+        m = load(Path(tempfile.mkdtemp()))
+        here = tempfile.mkdtemp()
+        with mock.patch.object(m, "claude_exe", return_value="claude"), mock.patch.object(m, "cli_logged_in", return_value=True):
+            out = run(m, "spawn", "--name", "look up", "--task", "find x", "--repo", here, "--model", "haiku",
+                      "--effort", "low", "--dry-run")
+            self.assertIn("claude --bg --name look-up --model haiku --effort low", out)
+            plain = run(m, "spawn", "--name", "look up", "--task", "find x", "--repo", here, "--dry-run")
+            self.assertIn("claude --bg --name look-up\n", plain)
+            self.assertIn("REFUSED", run(m, "spawn", "--name", "n", "--task", "t", "--repo", here, "--model", "haiku; rm x", "--dry-run"))
+
+    def test_spawn_in_a_folder_claude_code_does_not_trust_says_how_to_start_it_instead(self):
+        m = load(Path(tempfile.mkdtemp()))
+        here = tempfile.mkdtemp()
+        seen = {}
+
+        def fake(cmd, **kw):
+            seen.update(kw)
+            return mock.Mock(returncode=1, stdout="", stderr="Workspace not trusted. Run `claude` in X once and accept the trust prompt, then retry.")
+        with mock.patch.object(m, "claude_exe", return_value="claude"), mock.patch.object(m, "cli_logged_in", return_value=True), \
+                mock.patch.object(m.subprocess, "run", side_effect=fake):
+            out = run(m, "spawn", "--name", "n", "--task", "do the thing", "--repo", here)
+        self.assertIn("CANNOT START", out)
+        self.assertIn("app's own session tool", out)
+        self.assertIn("do the thing", out)
+        self.assertEqual(seen.get("encoding"), "utf-8")   # the CLI's "·" must not come back as "Â·"
+        self.assertFalse((m.CAIRN / "spawned.md").exists())
+
     def test_audit_counts_only_this_projects_auto_memory(self):
         m = load(Path(tempfile.mkdtemp()))
         here = Path(tempfile.mkdtemp())
@@ -276,6 +307,52 @@ class Edges(unittest.TestCase):
         out = buf.getvalue()
         self.assertEqual(out.count("Auto memory"), 1)
         self.assertNotIn("some-other-project", out)
+
+    def test_audit_counts_the_skills_of_plugins_synced_from_the_account(self):
+        # Seen live: 7 plugins synced from claude.ai listed 50 skills (~5.7k tokens) in every session, the
+        # audit said "Enabled plugins (1)" and nothing about them.
+        m = load(Path(tempfile.mkdtemp()))
+        syn = m.HOME / "plugins" / "synced" / "org_user"
+        for plugin, n in (("legal", 9), ("design", 7)):
+            d = syn / plugin
+            (d / ".claude-plugin").mkdir(parents=True)
+            (d / ".claude-plugin" / "plugin.json").write_text(json.dumps({"name": plugin}))
+            for i in range(n):
+                (d / "skills" / f"s{i}").mkdir(parents=True)
+                (d / "skills" / f"s{i}" / "SKILL.md").write_text(
+                    "---\nname: s%d\ndescription: %s\n---\nbody that is not listed\n" % (i, "word " * 90))
+        (syn / "legal" / ".mcp.json").write_text(json.dumps({"mcpServers": {"slack": {}, "box": {}}}))
+        (syn / "empty").mkdir()
+        (m.HOME / "plugins" / "installed_plugins.json").write_text(json.dumps({"plugins": {"x@y": [{"installPath": ""}], "bad": 3}}))
+        costs = m.plugin_costs()
+        self.assertEqual([(c[1], c[2], c[3]) for c in costs], [("legal", 9, 2), ("design", 7, 0)])
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        old = os.getcwd()
+        os.chdir(tempfile.mkdtemp())
+        try:
+            with redirect_stdout(buf):
+                m.cmd_audit()
+        finally:
+            os.chdir(old)
+        out = buf.getvalue()
+        self.assertIn("Plugin skill descriptions (16 skills in 2 plugins)", out)
+        self.assertIn("legal (9 skills, declares 2 MCP server(s); synced from claude.ai)", out)
+        self.assertIn("turn off the ones not needed", out)
+        self.assertNotIn("own count", out)    # the CLI is asked only with --exact
+
+    def test_context_table_reads_the_clis_own_count(self):
+        m = load(Path(tempfile.mkdtemp()))
+        text = "\n".join([
+            "## Context Usage", "", "**Model:** claude-haiku-5-5  ", "**Tokens:** 33.2k / 1m (3%)", "",
+            "### Estimated usage by category", "", "| Category | Tokens | Percentage |", "|----------|--------|------------|",
+            "| System prompt | 3.6k | 0.4% |", "| System tools | 15.3k | 1.5% |", "| MCP tools (deferred) | 58.2k | 5.8% |",
+            "| Skills | 9.9k | 1.0% |", "| Messages | 201 | 0.0% |", "| Free space | 933.8k | 93.4% |",
+            "| Autocompact buffer | 33k | 3.3% |", "", "### MCP Tools", "", "| Tool | Server | Tokens |", "| a | b | 152 |"])
+        self.assertEqual(m.context_table(text), ("33.2k / 1m (3%)", [("System prompt", "3.6k"), ("System tools", "15.3k"), ("Skills", "9.9k")]))
+        self.assertEqual(m.context_table("not a table"), ("", []))
+        self.assertEqual(m.context_table(None), ("", []))
 
 
 class AgentFields(unittest.TestCase):
