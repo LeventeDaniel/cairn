@@ -47,11 +47,48 @@ KINDS = {"small": ("sonnet", "low"), "normal": ("sonnet", "medium"), "hard": ("o
 
 def cfg():
     c = dict(DEFAULTS)
-    try:
-        c.update(json.loads(CFG.read_text(encoding="utf-8")))
-    except (OSError, ValueError):
-        pass
+    user = read_json(CFG, {})
+    for k, v in (user.items() if isinstance(user, dict) else ()):
+        # a hand-edited value of the wrong kind ("often" where a number goes) crashed every hook: the default stays
+        want = DEFAULTS.get(k)
+        if want is None or (isinstance(v, str) if isinstance(want, str)
+                            else isinstance(v, (int, float)) and not isinstance(v, bool)):
+            c[k] = v
     return c
+
+
+HOOKS = ("statusline", "prompt", "session-start", "stop")
+ERRORS = "errors.log"
+
+
+def hook_failed(cmd):
+    """A hook that crashes must not fail the user's turn (the app shows "hook error" on every prompt and the
+    status line goes blank). The traceback goes to ~/.claude/cairn/errors.log, which the board reports."""
+    import traceback
+    try:
+        log = CAIRN / ERRORS
+        old = log.read_text(encoding="utf-8", errors="replace")[-20000:] if log.exists() else ""
+        tb = traceback.format_exc().strip()
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(f"{old}@ {int(time.time())} {cmd}: {tb.splitlines()[-1][:200]}\n{tb[-1500:]}\n\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def hook_errors(hours=24):
+    """(how many hook crashes in the last `hours`, the latest one's line) from errors.log."""
+    try:
+        heads = re.findall(r"^@ (\d+) (.+)$", (CAIRN / ERRORS).read_text(encoding="utf-8", errors="replace"), re.M)
+    except OSError:
+        return 0, ""
+    recent = [h for t, h in heads if time.time() - int(t) <= hours * 3600]
+    return len(recent), (recent[-1] if recent else "")
+
+
+def hook_errors_note():
+    n, last = hook_errors()
+    return (f"HOOK ERRORS: {n} Cairn hook crash(es) in the last 24 h, latest: {last}. Tracebacks: ~/.claude/cairn/{ERRORS}. "
+            "Tell the user in one line and send the fix to a cairn worker.") if n else ""
 
 
 def read_json(p, default=None):
@@ -345,7 +382,7 @@ def cmd_prompt():
     nag = read_json(CAIRN / "nag" / f"{sid}.json", {}) or {}
     # Finished workers nobody archived keep their whole context alive. Home heard of them only when it
     # started; one sat open for a day (seen live). The saved board says which (no CLI call per prompt).
-    left = still_open((read_json(BOARD, {}) or {}).get("tasks", [])) if home else []
+    left = still_open(board_load()["tasks"]) if home else []
     key = (f"{level}|{tools >= c['tool_results']}|{bool(notes and 'usage' in notes[-1])}|{bool(shift)}|"
            f"{','.join(t['id'] for t in cut)}|{','.join(sorted(t['id'] for t in left))}")
     since = nag.get("since", 0) + 1
@@ -595,6 +632,8 @@ def cmd_session_start():
         print(f"[Cairn · Home] You are {HOME_TITLE}: route, never do the work (rules in this folder's CLAUDE.md, "
               f"dispatch skill for every request). Board: {board}. Repos: "
               + ", ".join(f"{r['name']} ({r['purpose']})" for r in registry()[:15]))
+        if hook_errors_note():
+            print("[Cairn] " + hook_errors_note())
         return
     root = project_root(cwd)
     git_exclude(cwd)
@@ -821,7 +860,7 @@ def is_home(cwd):
 
 def is_worker(sid):
     """A session Home started (its row on the board names it)."""
-    b = read_json(BOARD, {}) or {}
+    b = board_load()
     return any(sid and sid in (t.get("cliSession"), (t.get("session") or "").replace("local_", ""))
                for t in b.get("tasks", []) if t.get("status") not in ("done", "closed"))
 
@@ -832,7 +871,7 @@ def claim_worker(sid, title):
     def want(t):
         return (t.get("status") in ("running", "waiting") and not t.get("cliSession")
                 and same_title(title, t.get("title")))
-    tasks = (read_json(BOARD, {}) or {}).get("tasks", [])
+    tasks = board_load()["tasks"]
     if any(t.get("cliSession") == sid for t in tasks) or not any(want(t) for t in tasks):
         return
     with board_lock():
@@ -853,7 +892,7 @@ def cmd_stop():
     sid = d.get("session_id") or ""
     if not sid or d.get("agent_id"):
         return
-    if not any(t.get("cliSession") == sid for t in (read_json(BOARD, {}) or {}).get("tasks", [])):
+    if not any(t.get("cliSession") == sid for t in board_load()["tasks"]):
         return  # not a worker: nothing to record
     lines = [ln.strip() for ln in (d.get("last_assistant_message") or "").splitlines() if ln.strip()]
     last = re.sub(r"\s+", " ", lines[-1].lstrip("#>-• ").strip("*_` ")) if lines else ""
@@ -882,7 +921,7 @@ LIMIT_NOTICE = re.compile(r"\b(hit|reached) your\b.{0,40}\blimit\b|\busage limit
 
 def stopped_workers(error="rate_limit"):
     """Open board rows whose worker was cut off by this API error and has not run since."""
-    return [t for t in (read_json(BOARD, {}) or {}).get("tasks", [])
+    return [t for t in board_load()["tasks"]
             if t.get("stopped") == error and t.get("status") == "waiting"]
 
 
@@ -1026,9 +1065,20 @@ def cmd_cleanup():
 
 # ---------------------------------------------------------------- board (Cairn Home's task list)
 def board_load():
-    b = read_json(BOARD, {}) or {}
-    b.setdefault("tasks", [])
-    b.setdefault("next", 1)
+    b = read_json(BOARD, {})
+    b = b if isinstance(b, dict) else {}
+    # One damaged row (hand-edited, or half of an old format) must not take the whole board down.
+    rows = [t for t in (b.get("tasks") if isinstance(b.get("tasks"), list) else [])
+            if isinstance(t, dict) and isinstance(t.get("id"), str) and isinstance(t.get("status"), str)]
+    for t in rows:
+        if not isinstance(t.get("started"), (int, float)) or isinstance(t.get("started"), bool):
+            t["started"] = time.time()
+        for k in ("title", "model", "effort"):
+            if not isinstance(t.get(k), str):
+                t[k] = ""
+    b["tasks"] = rows
+    if not isinstance(b.get("next"), int):
+        b["next"] = 1 + max([int(m.group(1)) for t in rows for m in [re.match(r"t(\d+)$", t["id"])] if m], default=0)
     return b
 
 
@@ -1287,6 +1337,8 @@ def cmd_board():
     if "--json" in sys.argv:
         print(json.dumps(rows, ensure_ascii=False))
         return
+    if hook_errors_note():
+        print(hook_errors_note())
     if not rows:
         print("Board is empty.")
         return
@@ -1554,6 +1606,21 @@ def cmd_shot():
     print(out)
 
 
+def run_command(cmd):
+    fn = {"statusline": cmd_statusline, "prompt": cmd_prompt,
+          "session-start": cmd_session_start, "stop": cmd_stop, "audit": cmd_audit, "spawn": cmd_spawn, "new-repo": cmd_new_repo,
+          "workspace": cmd_workspace, "shot": cmd_shot, "cleanup": cmd_cleanup,
+          "dispatch": cmd_dispatch, "report": cmd_report, "board": cmd_board}.get(cmd, lambda: print(__doc__))
+    try:
+        fn()
+    except Exception:
+        if cmd not in HOOKS:
+            raise
+        hook_failed(cmd)
+        if cmd == "statusline":
+            print(f"cairn: status line error, see ~/.claude/cairn/{ERRORS}")
+
+
 if __name__ == "__main__":
     # Windows pipes default to cp1252, which can't print ● ⚠ · and crashed the status line. Reading is the
     # same: Claude Code sends the hook's JSON as UTF-8, and read as cp1252 every non-ASCII character came
@@ -1567,7 +1634,4 @@ if __name__ == "__main__":
     if cmd and cmd not in ("statusline", "prompt", "session-start", "stop", "audit", "spawn", "workspace", "shot",
                            "cleanup", "dispatch", "report", "board", "new-repo"):
         print(f"Unknown command '{cmd}'.\n"); print(__doc__); sys.exit(2)
-    {"statusline": cmd_statusline, "prompt": cmd_prompt,
-     "session-start": cmd_session_start, "stop": cmd_stop, "audit": cmd_audit, "spawn": cmd_spawn, "new-repo": cmd_new_repo,
-     "workspace": cmd_workspace, "shot": cmd_shot, "cleanup": cmd_cleanup,
-     "dispatch": cmd_dispatch, "report": cmd_report, "board": cmd_board}.get(cmd, lambda: print(__doc__))()
+    run_command(cmd)

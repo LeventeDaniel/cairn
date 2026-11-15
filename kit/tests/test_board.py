@@ -1,5 +1,5 @@
 """Checks for cairn.py dispatch / report / board and the Home/worker hooks. Run: python -m unittest tests/test_board.py"""
-import importlib.util, io, json, os, subprocess, sys, tempfile, time, unittest
+import importlib.util, io, json, os, re, subprocess, sys, tempfile, time, unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -224,6 +224,75 @@ class Hooks(unittest.TestCase):
         out = run(self.m, "session-start", stdin={"session_id": "s1", "cwd": str(scratch), "source": "startup"})
         self.assertNotIn("New repo", out)
         self.assertFalse(self.m.REGISTRY.exists() and scratch.name in self.m.REGISTRY.read_text())
+
+
+class Sturdy(unittest.TestCase):
+    """Broken input or damaged state files: a hook never fails the user's turn, and the crash is on record."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.m = load(self.tmp)
+        self.m.CAIRN.mkdir(parents=True)
+
+    def hook(self, cmd, raw):
+        old, sys.stdin = sys.stdin, io.StringIO(raw)
+        out = io.StringIO()
+        try:
+            with redirect_stdout(out):
+                self.m.run_command(cmd)
+        finally:
+            sys.stdin = old
+        return out.getvalue()
+
+    def test_a_config_value_of_the_wrong_kind_keeps_the_default(self):
+        self.m.CFG.write_text(json.dumps({"repeat_every": "often", "usage_warn": True, "warn": 35.5,
+                                          "repos_dir": 7, "my_own_key": "x"}))
+        c = self.m.cfg()
+        self.assertEqual((c["repeat_every"], c["usage_warn"], c["warn"]), (8, 80, 35.5))
+        self.assertEqual((c["repos_dir"], c["my_own_key"]), ("~/Projects", "x"))
+        self.m.CFG.write_text("[1, 2]")
+        self.assertEqual(self.m.cfg(), self.m.DEFAULTS)
+
+    def test_a_crashing_hook_exits_quietly_and_the_board_reports_it(self):
+        for cmd in ("prompt", "session-start", "stop"):
+            self.assertEqual(self.hook(cmd, "[]"), "")          # not a JSON object: used to be a traceback
+        self.assertIn("status line error", self.hook("statusline", '"x"'))
+        n, last = self.m.hook_errors()
+        self.assertEqual(n, 4)
+        self.assertIn("statusline: AttributeError", last)
+        self.assertIn("Traceback", (self.m.CAIRN / "errors.log").read_text(encoding="utf-8"))
+        self.assertIn("HOOK ERRORS: 4 Cairn hook crash(es)", run(self.m, "board"))
+        self.m.HOME_DIR.mkdir(parents=True)
+        self.assertIn("HOOK ERRORS", run(self.m, "session-start", stdin={"session_id": "h", "cwd": str(self.m.HOME_DIR)}))
+        # yesterday's crashes are not news
+        log = self.m.CAIRN / "errors.log"
+        log.write_text(re.sub(r"^@ \d+", f"@ {int(time.time()) - 2 * 86400}", log.read_text(encoding="utf-8"), flags=re.M),
+                       encoding="utf-8")
+        self.assertEqual(self.m.hook_errors(), (0, ""))
+        self.assertNotIn("HOOK ERRORS", run(self.m, "board"))
+
+    def test_a_command_the_user_runs_still_shows_its_error(self):
+        def boom():
+            raise RuntimeError("boom")
+        self.m.cmd_board = boom
+        with self.assertRaises(RuntimeError):
+            self.m.run_command("board")
+        self.assertFalse((self.m.CAIRN / "errors.log").exists())
+
+    def test_one_damaged_board_row_does_not_take_the_board_down(self):
+        run(self.m, "dispatch", "--repo", "a", "--title", "a: job", "--session", "local_j")
+        b = json.loads(self.m.BOARD.read_text(encoding="utf-8"))
+        b["tasks"] += ["x", {"id": "t7"}, {"id": "t9", "status": "running", "started": "soon", "title": None}]
+        del b["next"]
+        self.m.BOARD.write_text(json.dumps(b))
+        out = run(self.m, "board")
+        self.assertIn("a: job", out)
+        self.assertEqual([t["id"] for t in self.m.board_load()["tasks"]], ["t1", "t9"])
+        self.assertEqual(self.m.board_load()["next"], 10)
+        self.m.HOME_DIR.mkdir(parents=True)
+        self.assertIn("Cairn Home", run(self.m, "session-start", stdin={"session_id": "h", "cwd": str(self.m.HOME_DIR)}))
+        self.m.BOARD.write_text("[]")
+        self.assertEqual(run(self.m, "board").strip(), "Board is empty.")
 
 
 class Scope(unittest.TestCase):
