@@ -14,6 +14,8 @@ export type LedgerCfg = {
   ledger_read_usd_per_mtok: number
   /** USD per million tokens when the cache is cold (cache write, the full-price re-read) */
   ledger_write_usd_per_mtok: number
+  /** the floor to hold older events against (those logged before Cairn learned one); 0 or absent = none */
+  ledger_floor?: number
 }
 
 export const LEDGER_DEFAULTS: LedgerCfg = {
@@ -69,7 +71,9 @@ export function summarize(events: readonly LedgerEvent[], now: number, c: Ledger
     s.compactions++
     if (e.by === 'cairn') s.byCairn++
     else s.byApp++
-    const removed = Math.max(0, (e.before ?? 0) - (e.after ?? 0))
+    // The engine's `after` counts the summary alone; the next reply also carries the system prompt, the
+    // tools and the files the app re-attaches. With the floor known, only what went below it counts.
+    const removed = Math.max(0, (e.before ?? 0) - Math.max(e.after ?? 0, e.floor ?? c.ledger_floor ?? 0))
     s.tokensRemoved += removed
     // Only compactions Cairn chose count as savings: the app would have compacted anyway.
     if (e.by === 'cairn') {

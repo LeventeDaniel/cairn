@@ -17,11 +17,13 @@ const PCT_ONLY = {
 type Seen = { compacts: number; toasts: string[]; release: () => void; releaseCache: () => void; stored: Record<string, unknown> }
 
 /** An engine at `percent` context; long timers (the idle one) wait for `seen.release()`. */
-function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; cwd?: string; failCompact?: boolean; board?: unknown; cfg?: object } = {}): Seen {
+function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; cwd?: string; failCompact?: boolean; board?: unknown; cfg?: object
+  floor?: unknown; limits?: unknown[]; measured?: unknown } = {}): Seen {
   const seen: Seen = { compacts: 0, toasts: [], release: () => {}, releaseCache: () => {}, stored: {} }
   const gate = new Promise<void>(r => { seen.release = r })
   const cacheGate = new Promise<void>(r => { seen.releaseCache = r })
   if (opt.ends) seen.stored.lastEnd = opt.ends
+  if (opt.floor) seen.stored.floor = opt.floor
   on('store.get', (_: any, e: any) => ({ value: seen.stored[e.key] }))
   on('store.set', (_: any, e: any) => { seen.stored[e.key] = e.value; return { value: undefined } })
   on('command.register', () => ({ value: { command: 'cairn' } }))
@@ -30,12 +32,13 @@ function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; c
   on('session.id', () => ({ value: 's1' }))
   on('session.cwd', () => ({ value: opt.cwd ?? 'C:/r/example-a' }))
   on('session.usage', () => ({ value: {
-    startedAt: 0, context: { tokens: percent * 10000, window: 1000000, percent }, rateLimits: [] } }))
+    startedAt: 0, context: { tokens: percent * 10000, window: 1000000, percent }, rateLimits: opt.limits ?? [] } }))
   // These tests are about the percentage steps (the test window is 1M tokens, so 50% is 500k): the token
   // steps are switched off unless a test passes its own config.
   const config = JSON.stringify(opt.cfg ?? PCT_ONLY)
   on('fs.read', (_: any, e: any) => ({ value: opt.board && String(e.path).endsWith('board.json') ? JSON.stringify(opt.board)
-    : String(e.path).endsWith('config.json') ? config : '{}' }))
+    : String(e.path).endsWith('config.json') ? config
+    : opt.measured && String(e.path).endsWith('measured.json') ? JSON.stringify(opt.measured) : '{}' }))
   on('fs.list', () => ({ value: [] }))
   on('fs.write', () => ({ value: undefined }))
   on('ui.toast', (_: any, e: any) => { seen.toasts.push(e.text); return { value: undefined } })
@@ -312,13 +315,20 @@ test('a finished worker is not compacted while it sits idle, the offer stays', a
   await ui.unmount()
 })
 
-test('a finished worker reopened after the cache expired is offered a compaction, not given one', async ($, on) => {
+// Seen live: the band offered to compact a finished 195k-token worker at restart, it was pressed, and the
+// whole history was read uncached for a session nobody would use again.
+test('a finished worker reopened after the cache expired is told to archive, with no Compact now', async ($, on) => {
   const seen = engine(on, 20, { now: 3 * 3600000, ends: { s1: { at: 0, tokens: 200000 } }, board: DONE_BOARD })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   for (let i = 0; i < 5; i++) await settle()
   expect(seen.compacts).toBe(0)
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
-  expect(await ui.find({ type: 'Text', text: /compact before you continue/ })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /task is finished: archive it/ }))?.text).toContain('200k tokens')
+  expect(await ui.find({ type: 'Text', text: /compact before you continue/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', text: /Compact now/ })).toBeUndefined()
+  await ui.press({ key: 'later' })
+  await settle()
+  expect(seen.compacts).toBe(0)
   await ui.unmount()
 })
 
@@ -390,4 +400,87 @@ test('Cairn Home is compacted from 50k tokens, not from 15% of a 1M window', asy
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
   expect(await ui.find({ type: 'Text', text: /good moment to compact/ })).toBeDefined()
   await ui.unmount()
+})
+
+// ---- the floor: a compaction cannot go below what every context restarts at (system prompt, tools, summary)
+// Measured 2026-11-15: the engine reported 95k -> 16k, the next reply ran at 85k. Home's steps sat under it.
+const HOME = 'C:/Users/me/.claude/cairn/home'
+
+test('with an 85k floor known, Cairn Home at 95k is left alone: there is 10k to remove, not 79k', async ($, on) => {
+  const seen = engine(on, 9.5, { cfg: {}, cwd: HOME, floor: { home: [85000, 91000] } })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' } as any))
+  await settle()
+  seen.release(); seen.releaseCache()
+  for (let i = 0; i < 5; i++) await settle()
+  expect(seen.compacts).toBe(0)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect(await ui.find({ type: 'Text', text: /good moment/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('with an 85k floor, Cairn Home is offered a compaction from floor + 60k and compacts mid-task from floor + 120k', async ($, on) => {
+  const seen = engine(on, 15, { cfg: {}, cwd: HOME, floor: { home: [85000] } })   // 150k: past 145k
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' } as any))
+  await settle()
+  expect(seen.compacts).toBe(0)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect(await ui.find({ type: 'Text', text: /good moment to compact/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('with an 85k floor, Cairn Home at 210k compacts at the turn end', async ($, on) => {
+  const seen = engine(on, 21, { cfg: {}, cwd: HOME, floor: { home: [85000] } })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'Read', file_path: 'C:/a.ts' } as any))
+  await settle()
+  expect(seen.compacts).toBe(1)
+})
+
+test('a floor learned in a repo does not move Home, and the measured file stands in until one is learned', async ($, on) => {
+  const seen = engine(on, 12, { cfg: {}, floor: { home: [85000] }, measured: { history: { floor: 80000 } } })   // a repo at 120k
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' } as any))
+  await settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' } as any)
+  expect(await ui.find({ type: 'Text', text: /good moment/ })).toBeUndefined()   // 120k is under 80k + 60k
+  await ui.unmount()
+  expect(seen.compacts).toBe(0)
+})
+
+test('the first reading of the turn after a compaction is kept as the floor', async ($, on) => {
+  const seen = engine(on, 30, { cfg: {} })
+  on('session.compact', () => ({ messages: [{ role: 'user', text: 's', toolUses: [] }], tokensBefore: 300000, tokensAfter: 16000 }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'hi', toolUses: [] }] } as any)
+  const reading = (tokens: number) => $.session.measure({
+    startedAt: 0, context: { tokens, window: 1000000, percent: tokens / 10000 }, rateLimits: [], changed: [] } as any)
+  await reading(16000)                       // before any new turn: the engine's own count, not the floor
+  expect(seen.stored.floor).toBeUndefined()
+  await $.turn.start({ turnId: 't2', text: 'go' } as any)
+  await reading(87000)
+  await reading(120000)                      // later readings of the same turn are the turn's own work
+  expect(seen.stored.floor).toEqual({ work: [87000] })
+})
+
+// ---- the plan limit: at the limit a compaction can only fail, just under it, it spends what is left
+const SPENT = [{ kind: 'five_hour', percentUsed: 97 }, { kind: 'seven_day', percentUsed: 40 }]
+
+test('with the 5-hour limit nearly used up nothing is compacted by Cairn itself', async ($, on) => {
+  const seen = engine(on, 75, { limits: SPENT })   // past the hard step: would compact at the turn end
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'Bash', command: 'git commit -m x' } as any))
+  await settle()
+  seen.release(); seen.releaseCache()
+  for (let i = 0; i < 5; i++) await settle()
+  expect(seen.compacts).toBe(0)
+})
+
+test('with the limit nearly used up, /cairn compact still runs: the person asked', async ($, on) => {
+  const seen = engine(on, 75, { limits: SPENT })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'cairn', args: 'compact' } as any)
+  await settle()
+  expect(seen.compacts).toBe(1)
 })
