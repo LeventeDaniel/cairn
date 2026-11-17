@@ -7,7 +7,7 @@ import type { LedgerEvent } from './ledger'
 import { advice, health, needsAndRunning } from './panel'
 import type { Item } from './panel'
 
-const VERSION = '0.9.1'
+const VERSION = '0.9.2'
 const PANE = 'cairn'
 const TITLE = 'Cairn'
 // Tunable in ~/.claude/cairn/config.json, next to Cairn's own keys.
@@ -268,7 +268,7 @@ async function refreshWorkspace($: EngineInterface, force = false) {
   }
 }
 
-// An idle session gets no turn-end refresh, so the pane would go stale: re-read after 2 minutes, and keep
+// An idle session gets no turn-end refresh, so the pane would go stale: re-read after 5 minutes, and keep
 // going only while the board keeps changing (an unchanged re-read ends the chain).
 let wsTimer = false
 let wsKey = ''
@@ -277,7 +277,7 @@ let timerFired = false
 function armWorkspaceTimer($: EngineInterface) {
   if (wsTimer) return
   wsTimer = true
-  $.clock.after(120000, () => {
+  $.clock.after(300000, () => {
     wsTimer = false
     timerFired = true
     void refreshWorkspace($, true)
@@ -584,6 +584,13 @@ async function decide($: EngineInterface) {
       act: v.act, reason: v.reason, floor: floorTokens,
     }))
   } catch { /* the log is optional */ }
+  // Payback: a compaction below hard removes tokens - floor at best, and costs a full cache write next reply.
+  // Under floor + compact_min_gain_tokens it cannot earn that back (0.9.1 data: 4 of 13 paid).
+  if (v.act !== 'wait' && !v.reason.includes('before auto-compact') && floorTokens > 0 &&
+      (now0.tokens ?? 0) < floorTokens + cfg.compact_min_gain_tokens) {
+    await skipped($, 'below-payback', now0.tokens ?? 0)
+    v = { act: 'wait', reason: `only ${k((now0.tokens ?? 0) - floorTokens)} tokens above the floor: too little to pay back` }
+  }
   if (v.act === 'wait') {
     await update($, offer, o => (o?.done ? o : null))
     return
@@ -617,10 +624,20 @@ async function finishedWorker($: EngineInterface): Promise<boolean> {
   }
 }
 
+async function skipped($: EngineInterface, why: 'cache-expired' | 'below-payback', tokens: number) {
+  await logEvent($, { kind: 'skip', t: await $.clock.now(), sid: safeId(await $.session.id()), why, tokens })
+}
+
 async function idleCompact($: EngineInterface, seq: number) {
   const o = await read($, offer)
   if (seq !== turnSeq || pending || compacting || !o || o.done) return
   await update($, offer, () => null)
+  // The plan was made at o.at; if the clock says the cache has expired since (sleep, suspend), the summary
+  // would read the whole history uncached and nobody has asked for it: leave it to the next turn end.
+  if ((await $.clock.now()) - o.at > cfg.cache_ttl_minutes * 60000) {
+    await skipped($, 'cache-expired', (await read($, snap)).tokens ?? 0)
+    return
+  }
   if (await finishedWorker($)) return
   if (planSpent(await read($, snap))) return
   queueCompact($, `${o.reason}, you were away ${cfg.idle_minutes} min`)

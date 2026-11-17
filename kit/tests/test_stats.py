@@ -44,6 +44,9 @@ def transcript(m, sid, entries, project="C--r-a"):
     return f
 
 
+CHR10 = chr(10)
+
+
 def ledger(m, *events):
     p = m.CAIRN / "state" / "ledger.json"
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -205,6 +208,29 @@ class Results(unittest.TestCase):
         self.assertTrue(w["results"]["verdict"].startswith("NOT PROVEN"))
         self.assertTrue(any("1 sessions" in line for line in w["results"]["lines"]))
 
+    def test_compactions_the_mod_left_undone_are_counted(self):
+        now = time.time() * 1000
+        ledger(self.m, {"kind": "skip", "t": now, "sid": "s1", "why": "below-payback", "tokens": 90000},
+               {"kind": "skip", "t": now, "sid": "s1", "why": "below-payback", "tokens": 95000},
+               {"kind": "skip", "t": now, "sid": "s2", "why": "cache-expired", "tokens": 300000},
+               {"kind": "skip", "t": now - 90 * 86400000, "sid": "s3", "why": "cache-expired", "tokens": 1})
+        r = self.m.results(30)
+        self.assertEqual(r["skipped"], {"cache-expired": 1, "below-payback": 2})
+        self.assertIn("2 too little above the floor, 1 cache already expired", CHR10.join(r["lines"]))
+
+    def test_the_workspace_goal_is_read_from_a_worktrees_session_md_too(self):
+        m = self.m
+        repo = Path(tempfile.mkdtemp())
+        m.REGISTRY.write_text(f"- a | {repo} | test | {time.strftime('%Y-%m-%d')}" + CHR10, encoding="utf-8")
+        wt = repo / ".claude" / "worktrees" / "w1"
+        wt.mkdir(parents=True)
+        (wt / "SESSION.md").write_text(CHR10.join(["## Goal", "Fix the board", "", "## Next", "ship", ""]), encoding="utf-8")
+        r = json.loads(run(m, "workspace", "--json"))["repos"][0]
+        self.assertEqual((r["goal"], r["next"]), ("Fix the board", "ship"))
+        (repo / "SESSION.md").write_text(CHR10.join(["## Goal", "Main goal", ""]), encoding="utf-8")
+        os.utime(wt / "SESSION.md", (time.time() - 100, time.time() - 100))
+        self.assertEqual(json.loads(run(m, "workspace", "--json"))["repos"][0]["goal"], "Main goal")
+
     def test_a_headless_run_is_not_listed_as_a_session_of_the_repo(self):
         # Seen live: benchmark runs and Cairn's own /context reading showed in the pane as closed sessions.
         m = self.m
@@ -253,7 +279,7 @@ class NoPrompts(unittest.TestCase):
         block = (kit / "CLAUDE-block.md").read_text(encoding="utf-8")
         self.assertNotIn("type /clear", block)
         self.assertNotIn("offer Archive", block)
-        self.assertIn("or whether to compact or clear", block)
+        self.assertIn("whether to compact/clear", block)
         self.assertNotIn("type /clear", (kit / "skills" / "handoff" / "SKILL.md").read_text(encoding="utf-8"))
 
 

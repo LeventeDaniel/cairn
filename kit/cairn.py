@@ -540,6 +540,9 @@ def repeated_procedures(min_count=3):
     return [k for k, v in counts.items() if v >= min_count and re.sub(r"\W+", "-", k) not in have]
 
 
+GOAL_RE = r"##\s*Goal[^\n]*\n+[^\n#]"  # a SESSION.md whose Goal heading has text under it
+
+
 def router_context(name, sess, restored=False):
     goal = "not set yet"
     if restored:
@@ -565,7 +568,7 @@ def morning_digest(now=None):
     now = now or time.time()
     tasks = board_load()["tasks"]
     done = [t for t in tasks if t["status"] == "done" and now - t.get("updated", t["started"]) <= 86400]
-    wait = [t for t in tasks if t["status"] == "waiting"]
+    wait = [t for t in tasks if t["status"] == "waiting" and (t.get("waitingFor") or t.get("stopped"))]
     queued = [t for t in tasks if t["status"] == "queued"]
     if not (done or wait or queued):
         return ""
@@ -628,7 +631,7 @@ def cmd_session_start():
             return (f" (needs the user: {t['waitingFor']})" if t.get("waitingFor") else
                     " (cut off by the usage limit)" if t.get("stopped") == "rate_limit" else
                     f" (stopped: {t['stopped']})" if t.get("stopped") else "")
-        board = "; ".join(f"{t['id']} {t['status']} '{t['title']}'{why(t)}" for t in rows[:12]) or "empty"
+        board = "; ".join(f"{t['id']} {board_label(t)} '{t['title']}'{why(t)}" for t in rows[:12]) or "empty"
         left = still_open(board_rows(refresh=False))
         if left:
             board += (f". Finished but still open ({len(left)}): " + ", ".join(
@@ -1000,7 +1003,11 @@ def cmd_stop():
     with board_lock():
         b = board_load()
         for t in b["tasks"]:
-            if t.get("cliSession") == sid and t["status"] in ("running", "waiting"):
+            if t.get("cliSession") == sid and (t["status"] in ("running", "waiting")
+                                                   or (error and t.get("closedBy") == "gone")):
+                if error and t["status"] == "closed":
+                    t["status"] = "waiting"
+                    t.pop("closedBy", None)
                 t["last"], t["turnEnded"], t["pending"] = last[:200], time.time(), 0 if error else pending
                 if error:
                     if t.get("stopped") != error:  # for `stats`: each cut-off once, kept after the row is gone
@@ -1064,7 +1071,14 @@ def workspace():
         rp = Path(r["path"])
         goal = nxt = ""
         try:
-            t = (rp / "SESSION.md").read_text(encoding="utf-8", errors="replace")
+            cands = [rp / "SESSION.md"] + list((rp / ".claude" / "worktrees").glob("*/SESSION.md"))
+            cands = [x for x in cands if x.is_file()]
+            t = ""
+            for x in sorted(cands, key=lambda x: -x.stat().st_mtime):  # newest wins; main checkout first if it has a goal
+                tx = x.read_text(encoding="utf-8", errors="replace")
+                if re.search(GOAL_RE, tx):
+                    t = tx
+                    break
             g = re.search(r"##\s*Goal[^\n]*\n+([^\n]+)", t)
             n = re.search(r"##\s*Next[^\n]*\n+([^\n]+)", t)
             goal = g.group(1).strip() if g else ""
@@ -1294,7 +1308,13 @@ def board_refresh(b, agents=None):
             # Not on one look: a single short or partial answer from the CLI closed live workers
             # (seen live), and nothing reopened them.
             gone = t.setdefault("goneSince", now)
-            if t["status"] != "closed" and now - t["started"] > 300 and now - gone >= GONE_GRACE:
+            if t.get("stopped"):
+                # cut off by an API error (usage limit): its process exits, but it did not finish. Closing it
+                # hid the resume hint (seen live); it stays "waiting" until someone continues or closes it.
+                if t["status"] != "waiting":
+                    t["status"] = "waiting"
+                    t.pop("closedBy", None)
+            elif t["status"] != "closed" and now - t["started"] > 300 and now - gone >= GONE_GRACE:
                 t["status"] = "closed"
                 t["closedBy"] = "gone"
             if t["status"] == "closed":
@@ -1454,6 +1474,13 @@ ARCHIVE_HOW = ("Archive them now with the app's archive tool (mcp__ccd_session_m
                "an archived session can be unarchived any time, nothing is lost. Skip one only if the user is still using it.")
 
 
+def board_label(t):
+    """An idle session (its turn is over, nothing asked, not cut off) is not 'waiting' on the user."""
+    if t["status"] == "waiting" and not t.get("waitingFor") and not t.get("stopped"):
+        return "idle"
+    return t["status"]
+
+
 def cmd_board():
     rows = board_rows()
     if "--json" in sys.argv:
@@ -1472,7 +1499,8 @@ def cmd_board():
     mark = {"running": "●", "waiting": "!", "queued": "…", "done": "✓", "closed": "○"}
     for t in rows:
         age = round((time.time() - t["started"]) / 60)
-        print(f"{mark.get(t['status'], '?')} {t['id']:4} {t['status']:7} {t['title'][:50]:50} {t['model']}/{t['effort']}"
+        shown = board_label(t)
+        print(f"{'·' if shown == 'idle' else mark.get(t['status'], '?')} {t['id']:4} {shown:7} {t['title'][:50]:50} {t['model']}/{t['effort']}"
               f"  {age} min" + (f"\n         {t['report']}" + (" (note from before its last turn)" if t.get("reportStale") else "")
                              if t.get("report") else ""))
         if t.get("waitingFor") and t["status"] == "waiting":
@@ -1678,6 +1706,13 @@ def results(days=30, rows=None):
     led = [e for e in (read_json(CAIRN / "state" / "ledger.json", []) or [])
            if isinstance(e, dict) and e.get("kind") == "compaction" and isinstance(e.get("t"), (int, float))]
 
+    # compactions the mod left undone because they could not pay back (kind "skip"): counted in `stats`
+    skips = {"cache-expired": 0, "below-payback": 0}
+    cut = (now - days * 86400) * 1000
+    for e in (read_json(CAIRN / "state" / "ledger.json", []) or []):
+        if isinstance(e, dict) and e.get("kind") == "skip" and e.get("why") in skips                 and isinstance(e.get("t"), (int, float)) and e["t"] >= cut:
+            skips[e["why"]] += 1
+
     def by_cairn(sid, t):  # the mod's ledger says who started a compaction; the transcript cannot
         return any(e.get("sid") == sid and e.get("by") == "cairn" and abs(e["t"] / 1000 - t) < 900 for e in led)
 
@@ -1747,7 +1782,7 @@ def results(days=30, rows=None):
     c = comp["cairn"]
     net = c["avoided"] - c["cost"] - (overhead or 0)
     r = {"at": now, "days": days, "sessions": len(real), "headless": sum(1 for f in facts.values() if f["headless"]),
-         "replies": replies, "read": read, "withCairn": with_cairn, "compactions": comp, "perSessionOverhead": per_session, "overhead": overhead,
+         "replies": replies, "read": read, "withCairn": with_cairn, "compactions": comp, "skipped": skips, "perSessionOverhead": per_session, "overhead": overhead,
          "net": net, "limits": {"hits": sum(f["limits"] for f in real), "sessions": sum(1 for f in real if f["limits"])},
          "startup": {"readings": base[-1:] if len(base) < 2 else [base[0], base[-1]],
                      "firstReply": {"recent": median(recent), "nRecent": len(recent), "before": median(older), "nBefore": len(older)}},
@@ -1797,6 +1832,12 @@ def results_lines(r):
         out.append(f"Their cost: {kfmt(c['cost'])} token-reads (summaries read {kfmt(c['own'])} of history, the replies after "
                    f"re-wrote {kfmt(c['rewritten'])} tokens of cache"
                    + (f", {c['wasted']} ran on an expired cache with nobody coming back" if c["wasted"] else "") + ")")
+    sk = r.get("skipped") or {}
+    if sum(sk.values()):
+        out.append(f"Left alone because it could not pay back: {sk.get('below-payback', 0)} too little above the floor, "
+                   f"{sk.get('cache-expired', 0)} cache already expired")
+    else:
+        out.append("Left alone because it could not pay back: none recorded yet (mod 0.9.2 logs them)")
     out.append(f"Cairn's own text: {r['perSessionOverhead']} tokens (A/B), re-read by {r['withCairn']['replies']} replies = "
                f"{kfmt(r['overhead'])} token-reads" if r["overhead"] else
                "Cairn's own text per session: not measured (no A/B run on this computer)")
@@ -1907,6 +1948,7 @@ def mod_line(m):
         s += (f", {m['older']} still run an older one (they keep it until the app is restarted or "
               "/reload-plugins is typed there)")
     return s
+
 
 
 def cmd_workspace():

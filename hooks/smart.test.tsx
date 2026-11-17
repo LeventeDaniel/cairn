@@ -17,12 +17,14 @@ const PCT_ONLY = {
   home_compact_soft_tokens: 0, home_compact_at_tokens: 0, home_compact_hard_tokens: 0,
 }
 
-type Seen = { compacts: number; toasts: string[]; writes: string[]; release: () => void; releaseCache: () => void; stored: Record<string, unknown> }
+type Seen = { compacts: number; toasts: string[]; writes: string[]; release: () => void; releaseCache: () => void; advance: (ms: number) => void; stored: Record<string, unknown> }
 
 /** An engine at `percent` context; long timers (the idle one) wait for `seen.release()`. */
 function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; cwd?: string; failCompact?: boolean; board?: unknown; cfg?: object
   floor?: unknown; limits?: unknown[]; measured?: unknown } = {}): Seen {
-  const seen: Seen = { compacts: 0, toasts: [], writes: [], release: () => {}, releaseCache: () => {}, stored: {} }
+  const seen: Seen = { compacts: 0, toasts: [], writes: [], release: () => {}, releaseCache: () => {}, advance: () => {}, stored: {} }
+  let nowMs = opt.now ?? 1000
+  seen.advance = ms => { nowMs += ms }
   const gate = new Promise<void>(r => { seen.release = r })
   const cacheGate = new Promise<void>(r => { seen.releaseCache = r })
   if (opt.ends) seen.stored.lastEnd = opt.ends
@@ -47,7 +49,7 @@ function engine(on: any, percent: number, opt: { now?: number; ends?: unknown; c
   on('ui.toast', (_: any, e: any) => { seen.toasts.push(e.text); return { value: undefined } })
   on('ui.status', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
-  on('clock.now', () => ({ value: opt.now ?? 1000 }))
+  on('clock.now', () => ({ value: nowMs }))
   on('clock.after', async (_: any, e: any) => {
     if (e.ms >= 30 * 60000) await cacheGate   // the prompt-cache guard
     else if (e.ms > 10000) await gate         // the idle offer
@@ -142,6 +144,18 @@ test('a calm stop past compact_at is compacted once the person has been away', a
   await settle()
   expect(seen.compacts).toBe(1)
   expect(seen.toasts.some(t => t.includes('you were away 3 min'))).toBe(true)
+})
+
+test('a planned compaction is not run when the prompt cache expired while it waited, and the skip is logged', async ($, on) => {
+  const seen = engine(on, 62)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'Read', file_path: 'C:/a.ts' } as any))
+  await settle()
+  seen.advance(61 * 60000)     // the machine slept past the cache TTL before the idle timer fired
+  seen.release()
+  await settle()
+  expect(seen.compacts).toBe(0)
+  expect(seen.writes.some(w => w.includes('ledger.json') && w.includes('"kind":"skip"') && w.includes('cache-expired'))).toBe(true)
 })
 
 test('a new prompt calls off a planned compaction: the person is back', async ($, on) => {

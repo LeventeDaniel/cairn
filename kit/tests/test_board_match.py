@@ -421,6 +421,31 @@ class StopFailure(unittest.TestCase):
         self.m._AGENTS = [agent("u1", "a: job", "busy")]
         self.assertNotIn("stopped", json.loads(run(self.m, "board", "--json"))[0])
 
+    def test_a_cut_off_worker_is_never_closed_when_its_process_is_gone(self):
+        # Seen live: the limit ends the turn, the process exits, and the board marked the row "closed",
+        # which hid the resume hint.
+        self.m.GONE_GRACE = 0
+        b = json.loads(self.m.BOARD.read_text())
+        b["tasks"][0]["started"] -= 900
+        self.m.BOARD.write_text(json.dumps(b))
+        self.m._AGENTS = [agent("zz", "other: thing", "idle")]   # its own session no longer answers
+        for _ in range(2):
+            r = json.loads(run(self.m, "board", "--json"))[0]
+        self.assertEqual((r["status"], r["stopped"]), ("waiting", "rate_limit"))
+        self.assertIn("STOPPED", run(self.m, "board"))
+        # a row an older board already closed comes back when the stop hook says it was cut off
+        b = json.loads(self.m.BOARD.read_text())
+        b["tasks"][0].update(status="closed", closedBy="gone")
+        self.m.BOARD.write_text(json.dumps(b))
+        run(self.m, "stop", stdin={"session_id": "u1", "hook_event_name": "StopFailure", "error": "rate_limit"})
+        self.assertEqual(json.loads(self.m.BOARD.read_text())["tasks"][0]["status"], "waiting")
+
+    def test_an_idle_worker_that_asks_nothing_is_shown_idle_not_waiting(self):
+        run(self.m, "stop", stdin={"session_id": "u1", "last_assistant_message": "Done."})  # clears the stop
+        out = run(self.m, "board")
+        self.assertIn(" idle ", out)
+        self.assertNotIn(" waiting ", out)
+
     def test_home_is_told_once_and_other_sessions_are_not(self):
         run(self.m, "board")
         self.m.HOME_DIR.mkdir(parents=True)

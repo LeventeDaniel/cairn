@@ -175,8 +175,8 @@ def install():
         cfg["previous_statusline"] = old
     s["statusLine"] = {"type": "command", "command": cmd("statusline")}
     allow = s.setdefault("permissions", {}).setdefault("allow", [])
-    allow[:] = [r for r in allow if not re.search(r"(cairn|coach)\.py (spawn|dispatch|report|board)", r)]
-    allow.extend(f"Bash({cmd(c)}:*)" for c in ("spawn", "dispatch", "report", "board"))
+    allow[:] = [r for r in allow if not re.search(r"(cairn|coach)\.py (spawn|dispatch|report|board|stats)", r)]
+    allow.extend(f"Bash({cmd(c)}:*)" for c in ("spawn", "dispatch", "report", "board", "stats"))
     ours = set(cfg.get("routine_allow", []))          # rules a previous --routine-allow run added (not the user's own)
     allow[:] = [r for r in allow if r not in ours]
     cfg["routine_allow"] = []
@@ -216,7 +216,7 @@ def uninstall():
     if "allow" in perms:
         mine = set(cfg.get("routine_allow", []))
         perms["allow"] = [r for r in perms["allow"]
-                          if not re.search(r"cairn\.py (spawn|dispatch|report|board)", r) and r not in mine]
+                          if not re.search(r"cairn\.py (spawn|dispatch|report|board|stats)", r) and r not in mine]
         if not perms["allow"]:
             del perms["allow"]
         if not perms:

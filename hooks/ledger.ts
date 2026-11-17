@@ -40,7 +40,7 @@ export function parseLedger(raw: string): LedgerEvent[] {
     if (!Array.isArray(v)) return []
     return v.filter((e): e is LedgerEvent =>
       !!e && typeof e === 'object' && typeof (e as LedgerEvent).t === 'number' &&
-      ((e as LedgerEvent).kind === 'compaction' || (e as LedgerEvent).kind === 'cache-warning'))
+      ((e as LedgerEvent).kind === 'compaction' || (e as LedgerEvent).kind === 'cache-warning' || (e as LedgerEvent).kind === 'skip'))
   } catch {
     return []
   }

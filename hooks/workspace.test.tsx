@@ -129,12 +129,12 @@ test("the pane shows Cairn Home's board: waiting, running and recent done rows",
   await ui.unmount()
 })
 
-test('an idle session re-reads the workspace every 2 minutes so the board does not go stale', async ($, on) => {
+test('an idle session re-reads the workspace every 5 minutes so the board does not go stale', async ($, on) => {
   afters.length = 0
   engine(on, { hooks: HOOKS })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await settle()
-  expect(afters).toContain(120000)
+  expect(afters).toContain(300000)
 })
 
 test('the pane adds up cost per day and shows peak plan usage', async ($, on) => {

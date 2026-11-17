@@ -38,6 +38,11 @@ class Install(unittest.TestCase):
         s = json.loads((self.cl / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(s, {"theme": "dark", "permissions": {"allow": ["Bash(ls:*)"]}})
 
+    def test_stats_is_pre_approved_and_removed_again(self):
+        self.install()
+        allow = json.loads((self.cl / "settings.json").read_text(encoding="utf-8"))["permissions"]["allow"]
+        self.assertTrue(any(r.startswith("Bash(") and " stats:*" in r for r in allow), allow)
+
     def test_fresh_install_runs_every_command(self):
         self.install()
         for sk in ("handoff", "pass", "repos", "dispatch"):
@@ -140,7 +145,7 @@ class Install(unittest.TestCase):
     def test_block_is_slim_and_routing_lives_in_the_route_skill(self):
         self.install()
         block = (self.cl / "CLAUDE.md").read_text(encoding="utf-8")
-        self.assertLess(len(block), 2600)
+        self.assertLess(len(block), 1100)
         self.assertIn("`route` skill", block)
         self.assertNotIn("{{SPAWN}}", block)
         skill = (self.cl / "skills" / "route" / "SKILL.md").read_text(encoding="utf-8")

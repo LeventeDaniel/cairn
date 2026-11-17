@@ -362,7 +362,8 @@ class Digest(unittest.TestCase):
         mk = lambda i, s, u: {"id": i, "title": f"r: {i}", "status": s, "started": u, "updated": u}
         self.m.BOARD.write_text(json.dumps({"next": 9, "tasks": [
             mk("t1", "done", now - 3600), mk("t2", "done", now - 5 * 86400),
-            mk("t3", "waiting", now), mk("t4", "queued", now)]}))
+            dict(mk("t3", "waiting", now), waitingFor="a permission"), mk("t4", "queued", now),
+            mk("t5", "waiting", now)]}))  # t5: idle, asks nothing: not waiting on the user
         self.scratch = self.tmp / "proj"
         self.scratch.mkdir()
 
