@@ -100,6 +100,55 @@ class Board(unittest.TestCase):
                            "startedAt": time.time() * 1000}]
         self.assertEqual(json.loads(run(self.m, "board", "--json"))[0]["status"], "closed")
 
+    def test_a_closed_row_without_closedBy_is_not_reopened_either(self):
+        # Seen live: rows closed by an older kit (no closedBy) flipped back to "waiting" while a session
+        # with the same title sat idle, and filled "Needs you".
+        run(self.m, "dispatch", "--repo", "example-a", "--title", "example-a: old thing")
+        b = json.loads(self.m.BOARD.read_text())
+        b["tasks"][0].update(status="closed", started=time.time() - 900, goneSince=time.time() - 600)
+        self.m.BOARD.write_text(json.dumps(b))
+        self.m._AGENTS = [{"sessionId": "o1", "name": "example-a: old thing", "status": "idle",
+                           "startedAt": time.time() * 1000}]
+        self.m.GONE_GRACE = 0
+        self.assertEqual(json.loads(run(self.m, "board", "--json"))[0]["status"], "closed")
+
+    def test_an_auto_closed_row_comes_back_for_its_own_session_not_for_a_later_one(self):
+        run(self.m, "dispatch", "--repo", "example-a", "--title", "example-a: flaky")
+        b = json.loads(self.m.BOARD.read_text())
+        b["tasks"][0]["started"] = time.time() - 900
+        self.m.BOARD.write_text(json.dumps(b))
+        self.m.GONE_GRACE = 0
+        self.m._AGENTS = [{"sessionId": "zz", "name": "something else", "status": "idle", "startedAt": 1}]
+        row = json.loads(run(self.m, "board", "--json"))[0]
+        self.assertEqual((row["status"], row["closedBy"]), ("closed", "gone"))
+        # a session started after the close, same title: another task
+        self.m._AGENTS = [{"sessionId": "n1", "name": "example-a: flaky", "status": "idle",
+                           "startedAt": (time.time() + 60) * 1000}]
+        self.assertEqual(json.loads(run(self.m, "board", "--json"))[0]["status"], "closed")
+        # its own session answers again (the CLI had left it out): the row is back, and no longer "gone"
+        self.m._AGENTS = [{"sessionId": "f1", "name": "example-a: flaky", "status": "idle",
+                           "startedAt": (time.time() - 800) * 1000}]
+        row = json.loads(run(self.m, "board", "--json"))[0]
+        self.assertEqual((row["status"], row.get("closedBy")), ("waiting", None))
+
+    def test_workspace_says_which_open_sessions_run_the_current_mod(self):
+        m = self.m
+        mk = Path(tempfile.mkdtemp())
+        (mk / ".claude-plugin").mkdir()
+        (mk / ".claude-plugin" / "plugin.json").write_text('{"name": "cairn", "version": "9.9.9"}')
+        (m.HOME / "plugins").mkdir(parents=True, exist_ok=True)
+        (m.HOME / "plugins" / "known_marketplaces.json").write_text(
+            json.dumps({"cairn": {"source": {"source": "directory", "path": str(mk)}}}))
+        st = m.CAIRN / "state"
+        st.mkdir(parents=True, exist_ok=True)
+        (st / "new1.json").write_text('{"via": "cairn", "mod": "9.9.9"}')
+        (st / "old1.json").write_text('{"via": "cairn"}')
+        m._AGENTS = [{"sessionId": s, "name": s, "status": "idle", "startedAt": 1} for s in ("new1", "old1", "bg1")]
+        out = run(m, "workspace")
+        self.assertIn("Cairn mod 9.9.9: 1 open session(s) run it, 1 still run an older one", out)
+        self.assertEqual(json.loads(run(m, "workspace", "--json"))["mod"],
+                         {"current": "9.9.9", "onIt": 1, "older": 1, "without": 1})
+
     def test_note_from_before_idle_is_marked_stale(self):
         run(self.m, "dispatch", "--repo", "example-a", "--title", "example-a: long", "--session", "local_s1")
         run(self.m, "report", "t1", "--note", "still running")
