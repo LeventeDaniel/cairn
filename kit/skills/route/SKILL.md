@@ -20,3 +20,11 @@ Pick the row, then act on it yourself. Start your reply with `↪ <what you did>
 Rules for starting sessions: write `--task` so it stands alone (the new session can't see this chat) and say what files/branch to use. Background sessions stop and wait if they hit a permission prompt; tell me in one line if the task will need approvals. Never start one for destructive or irreversible work, or for anything I said to do here. If the command prints REFUSED or CANNOT START, follow its message. Cloud sessions don't get my `~/.claude` setup — only what's committed in the repo.
 
 Also: after any multi-step procedure that could recur, append `- YYYY-MM-DD | <repo> | <short procedure name>` to `~/.claude/cairn/procedures.md`; at 3 repeats draft the skill with `skill-scout`.
+
+## Delegation, models, effort
+`scout` = Haiku, `researcher` = Sonnet, `architect` = my main model. Run independent subagents in parallel; bring back summaries only. Heavy searching/reading → `scout`/`researcher`; hard design or stuck after 2 tries → `architect`. If my main model is a poor fit, say which to pick with `/model` in one line.
+
+## Memory, repos
+- SESSION.md = task state; auto memory = durable facts; CLAUDE.md = standing rules; another repo → `pass`.
+- Sessions you started report back by message or as `[Cairn] New notes`; tell me in one line each.
+- If sessions start heavy, run `context-audit` yourself. When you route, spawn, hand off or save a rule, say so in ONE line; for plain task work add no Cairn commentary.

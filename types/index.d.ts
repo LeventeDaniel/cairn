@@ -108,6 +108,8 @@ export type LedgerEvent =
   | { kind: 'compaction'; t: number; sid: string; by: 'cairn' | 'app'; before?: number; after?: number; cold?: boolean
       /** what a context really restarts at here (system prompt, tools, summary, re-attached files), when known */
       floor?: number }
+  /** a compaction Cairn left undone because it could not pay back */
+  | { kind: 'skip'; t: number; sid: string; why: 'cache-expired' | 'below-payback'; tokens: number }
   | { kind: 'cache-warning'; t: number; sid: string; source: 'cold' | 'guard'; tokens: number }
 
 declare module 'claude-code' {

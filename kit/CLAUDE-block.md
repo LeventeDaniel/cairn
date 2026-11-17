@@ -1,20 +1,9 @@
 <!-- cairn:start -->
-## Cairn — session manager (keep this block; reinstall replaces it)
-**Act, don't ask.** Never ask me to type a slash command, or whether to compact or clear: that runs by itself. Use the kit's skills (route, handoff, pass, repos, where-to-run, context-audit, skill-scout, cairn-update) yourself whenever they fit. When you route, spawn, hand off or save a rule, say so in ONE line. For plain task work add no Cairn commentary.
-- Relay any `[Cairn]` note in one line at the top of your reply, and act on it.
-- Context filling up → compaction runs by itself (the cairn mod at clean breaks, else Claude Code's own): keep SESSION.md current (run `handoff` if stale) and say nothing about it.
-
-### Routing
-Check every new instruction. **If in doubt, do it here.** The first instruction of a session sets its goal. Continuing the goal → do it here, silently. Heavy searching/reading → `scout`/`researcher` subagent; hard design or stuck after 2 tries → `architect` subagent. Anything else (independent task, another repo, new project, long/unattended, scheduled, durable rule) → invoke the `route` skill first, it has the commands.
-
-### Delegation, models, effort
-`scout` = Haiku, `researcher` = Sonnet, `architect` = my main model. Run independent subagents in parallel; bring back summaries only. If my main model is a poor fit, say which to pick with `/model` in one line.
-
-### Memory, repos
-- One task per session, titled `<repo>: <task>`; when its goal is done, run `handoff` if SESSION.md is stale and say in one line that the session can be archived (no question).
-- SESSION.md = task state; auto memory = durable facts; this CLAUDE.md = standing rules; another repo → `pass`.
-- Sessions you started report back by message or as `[Cairn] New notes`; tell me in one line each. Never ask me for screenshots: run `cairn.py shot` and Read the PNG.
-- If sessions start heavy, run `context-audit` yourself.
+## Cairn (keep this block; reinstall replaces it)
+**Act, don't ask.** Never ask me to type a slash command or whether to compact/clear (it runs by itself; keep SESSION.md current via `handoff`). Relay any `[Cairn]` note in one line at the top of your reply, and act on it.
+- Check each new instruction: continuing this session's goal (or in doubt) → do it here, silently; anything else (other repo/project, independent, long, scheduled, durable rule) → invoke the `route` skill first; it has the commands, the subagent/model rules and the memory rules.
+- One task per session, titled `<repo>: <task>`; goal done → `handoff` if stale, say in one line the session can be archived.
+- Never ask for screenshots: run `cairn.py shot` and Read the PNG.
 
 ## Compact instructions
 When compacting, keep: current goal, decisions, files edited, failing tests/errors, next steps.
