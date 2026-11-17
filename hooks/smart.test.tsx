@@ -403,8 +403,20 @@ test('with an 85k floor known, Cairn Home at 95k is left alone: there is 10k to 
   await ui.unmount()
 })
 
-test('with an 85k floor, Cairn Home plans a compaction from floor + 60k and compacts mid-task from floor + 120k', async ($, on) => {
-  const seen = engine(on, 15, { cfg: {}, cwd: HOME, floor: { home: [85000] } })   // 150k: past 145k
+// Counted 2026-11-15: a compaction must remove ~100k to earn back the cache it re-writes within ~10 replies.
+test('with an 85k floor, Cairn Home at 150k is left alone: 65k removed does not pay for the cache re-write', async ($, on) => {
+  const seen = engine(on, 15, { cfg: {}, cwd: HOME, floor: { home: [85000] } })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await turn($, () => $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' } as any))
+  await settle()
+  expect(seen.compacts).toBe(0)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' } as any)
+  expect(await ui.find({ type: 'Text', text: PLANNED })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('with an 85k floor, Cairn Home plans a compaction from floor + 100k and compacts mid-task from floor + 200k', async ($, on) => {
+  const seen = engine(on, 19, { cfg: {}, cwd: HOME, floor: { home: [85000] } })   // 190k: past 185k
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await turn($, () => $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x' } as any))
   await settle()
@@ -414,8 +426,8 @@ test('with an 85k floor, Cairn Home plans a compaction from floor + 60k and comp
   await ui.unmount()
 })
 
-test('with an 85k floor, Cairn Home at 210k compacts at the turn end', async ($, on) => {
-  const seen = engine(on, 21, { cfg: {}, cwd: HOME, floor: { home: [85000] } })
+test('with an 85k floor, Cairn Home at 290k compacts at the turn end, mid-task or not', async ($, on) => {
+  const seen = engine(on, 29, { cfg: {}, cwd: HOME, floor: { home: [85000] } })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await turn($, () => $.tool.call({ tool: 'Read', file_path: 'C:/a.ts' } as any))
   await settle()

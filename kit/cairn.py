@@ -1256,13 +1256,19 @@ def board_refresh(b, agents=None):
                 break
 
     def final(t):
-        return t["status"] in ("done", "queued") or (t["status"] == "closed" and t.get("closedBy") == "report")
+        # Closed is final whoever closed it (a report, a hand edit, a row from an older kit): seen live,
+        # closed rows without `closedBy` flipped back to "waiting" while a session of the same title sat
+        # idle. Only a row the board closed itself ("gone": its session stopped answering) may come back.
+        return t["status"] in ("done", "queued") or (t["status"] == "closed" and t.get("closedBy") != "gone")
 
     for t in sorted(b["tasks"], key=lambda t: -t["started"]):  # then by title, newest task first
         if t["id"] in match or final(t):
             continue
         same = [x for x in agents if x.get("sessionId") not in claimed and same_title(x.get("name"), t["title"])
-                and (x.get("startedAt") or 0) / 1000 >= t["started"] - 120]
+                and (x.get("startedAt") or 0) / 1000 >= t["started"] - 120
+                # an auto-closed row comes back for its own session only: one started after the row was
+                # closed is a later task that happens to carry the same title
+                and (t["status"] != "closed" or (x.get("startedAt") or 0) / 1000 <= t.get("goneSince", 0))]
         if same:
             match[t["id"]] = max(same, key=lambda x: x.get("startedAt") or 0)
             claimed.add(match[t["id"]].get("sessionId"))
@@ -1290,10 +1296,12 @@ def board_refresh(b, agents=None):
             gone = t.setdefault("goneSince", now)
             if t["status"] != "closed" and now - t["started"] > 300 and now - gone >= GONE_GRACE:
                 t["status"] = "closed"
+                t["closedBy"] = "gone"
             if t["status"] == "closed":
                 t.pop("cliSession", None)
             continue
         t.pop("goneSince", None)
+        t.pop("closedBy", None)
         t["cliSession"] = a.get("sessionId")
         st, state = a.get("status"), a.get("state")
         busy = st == "busy" or (st is None and state == "working")
@@ -1866,8 +1874,47 @@ def cmd_stats():
           f"(a write costs {WRITE_5M:g}-{WRITE_1H:g} cached reads), and Cairn's own text in every reply.")
 
 
+def mod_live():
+    """Which version of the Cairn mod the open app sessions run. The mod is loaded when a session starts
+    and kept until the app restarts or /reload-plugins is typed, so after an update old and new run side
+    by side; nothing showed which. The mod writes its version into the session's state file (from 0.9.1)."""
+    cur = None
+    try:
+        src = ((read_json(HOME / "plugins" / "known_marketplaces.json", {}) or {}).get("cairn") or {}).get("source") or {}
+        if src.get("path"):
+            cur = (read_json(Path(src["path"]) / ".claude-plugin" / "plugin.json", {}) or {}).get("version")
+    except (AttributeError, TypeError):
+        pass
+    out = {"current": cur, "onIt": 0, "older": 0, "without": 0}
+    for a in live_agents():
+        if a.get("status") not in ("busy", "idle", "waiting") or not a.get("sessionId"):
+            continue
+        st = read_json(CAIRN / "state" / f"{a['sessionId']}.json", {})
+        if not isinstance(st, dict) or st.get("via") != "cairn":
+            out["without"] += 1   # background and headless sessions run the kit's hooks, not the mod
+        elif cur and st.get("mod") == cur:
+            out["onIt"] += 1
+        else:
+            out["older"] += 1
+    return out
+
+
+def mod_line(m):
+    if not m.get("current"):
+        return ""
+    s = f"Cairn mod {m['current']}: {m['onIt']} open session(s) run it"
+    if m["older"]:
+        s += (f", {m['older']} still run an older one (they keep it until the app is restarted or "
+              "/reload-plugins is typed there)")
+    return s
+
+
 def cmd_workspace():
     w = workspace()
+    try:
+        w["mod"] = mod_live()
+    except Exception:
+        hook_failed("workspace")
     w["board"] = board_rows()
     w["stale"] = stale_cached()
     try:
@@ -1896,6 +1943,8 @@ def cmd_workspace():
                   f"{k(s['tokens']):>5}  cache {'warm' if s['warm'] else 'cold'}")
     for o in w["unregistered"]:
         print(f"(not in REPOS.md) {o['title'][:48]}  {o['status']}  {o['cwd']}")
+    if mod_line(w.get("mod") or {}):
+        print(mod_line(w["mod"]))
 
 
 def cli_logged_in(exe):

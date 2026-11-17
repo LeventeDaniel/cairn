@@ -7,7 +7,7 @@ import type { LedgerEvent } from './ledger'
 import { advice, health, needsAndRunning } from './panel'
 import type { Item } from './panel'
 
-const VERSION = '0.9.0'
+const VERSION = '0.9.1'
 const PANE = 'cairn'
 const TITLE = 'Cairn'
 // Tunable in ~/.claude/cairn/config.json, next to Cairn's own keys.
@@ -31,7 +31,11 @@ const DEFAULTS = {
   // 85k. A step that sits under floor + this much is lifted to it: Home's steps (50k/80k/150k) were all
   // under the floor, so Home compacted after nearly every turn to remove 3-10k tokens, paying a whole
   // new cache write each time. 0 = steps as configured.
-  compact_min_gain_tokens: 60000,
+  // Counted 2026-11-15 (`cairn.py stats`): after a compaction the next reply writes 30-40k tokens of cache
+  // again, which costs as much as about 700k tokens of cached reading. To earn that back a compaction that
+  // removes 60k needs about 15 replies after it, one that removes 100k about 10, 150k about 6-7; 7 of
+  // Cairn's 10 compactions had fewer. So: later, and bigger.
+  compact_min_gain_tokens: 100000,
   // From this % of the 5-hour or weekly limit Cairn starts no compaction by itself: at the limit it can
   // only fail (seen live), and just under it, it spends what is left. `/cairn compact` still works.
   usage_stop: 95,
@@ -516,7 +520,7 @@ async function refresh($: EngineInterface, u: Pick<SessionUsage, 'context' | 'ra
 
   const state = {
     t: Date.now() / 1000, pct: p ?? null, window: s.window || null,
-    five_hour: fh ?? null, seven_day: sd ?? null, model: null, via: 'cairn',
+    five_hour: fh ?? null, seven_day: sd ?? null, model: null, via: 'cairn', mod: VERSION,
   }
   try {
     const sid = safeId(await $.session.id())
